@@ -1,0 +1,76 @@
+.image-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 10px;
+  background-color: #f8f9fa;
+  margin-bottom: 15px;
+  min-height: 200px;
+}
+
+.emotion-card {
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  transition: transform 0.3s ease;
+}
+
+.emotion-card:hover {
+  transform: translateY(-5px);
+}
+
+.emotion-bars {
+  margin-top: 15px;
+}
+
+/* Màu sắc cho các thanh cảm xúc */
+.emotion-angry {
+  background-color: #FF0000 !important; /* đỏ */
+}
+
+.emotion-disgust {
+  background-color: #800080 !important; /* tím */
+}
+
+.emotion-fear {
+  background-color: #FFA500 !important; /* cam */
+}
+
+.emotion-happy {
+  background-color: #00FF00 !important; /* xanh lá */
+}
+
+.emotion-sad {
+  background-color: #0000FF !important; /* xanh dương */
+}
+
+.emotion-surprise {
+  background-color: #FFFF00 !important; /* vàng */
+}
+
+.emotion-neutral {
+  background-color: #808080 !important; /* xám */
+}
+
+/* Đảm bảo text tiếng Việt hiển thị tốt */
+.emotion-label, .progress-bar {
+  font-family: 'Roboto', 'Arial', sans-serif;
+  font-weight: 500;
+}
+
+/* Làm cho text trong progress bar dễ đọc hơn */
+.progress-bar {
+  color: white;
+  text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.5);
+}
+
+/* Thu nhỏ kích thước ảnh trên mobile */
+@media (max-width: 768px) {
+  .image-container {
+    min-height: 150px;
+  }
+  
+  .image-container img {
+    max-height: 150px !important;
+  }
+} 

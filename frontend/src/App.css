@@ -1,0 +1,33 @@
+.App {
+  text-align: center;
+  min-height: 100vh;
+}
+
+.nav-tabs {
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 20px;
+}
+
+.nav-tabs .nav-link {
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: #495057;
+  font-weight: 500;
+  transition: 0.3s;
+}
+
+.nav-tabs .nav-link:hover {
+  border-color: transparent;
+  color: #007bff;
+}
+
+.nav-tabs .nav-link.active {
+  color: #007bff;
+  background-color: transparent;
+  border-color: transparent;
+  border-bottom: 3px solid #007bff;
+}
+
+.tab-content {
+  padding: 20px 0;
+} 

@@ -1,0 +1,20 @@
+làm dự án nhạn diện cảm xúc khuôn mặt bao gom
+
+
+tôi muốn làm dự án nhận diện cảm xúc khuôn mặt gồm fontend và backend , 
+fontend dùng camera thực (từ website , điện thoại , các loại cam khác ) để thu thập các ảnh liên tục theo số giây quy định gửi đến server nhận diện , '
+sau khi server nhận diện thì lưu lại vào backend/image1 hoặc image2 hoặc image3 theo thứ tự cam 1, 2 ,3 kết quả nhận diện , ảnh , thời gian 
+
+Frontend: Web app truy cập camera lấy video từ cam website, cam điện thoại , cam camera an ninh, chụp ảnh định kỳ dùng nodejs
+
+Backend: Nhận ảnh, gọi model nhận diện cảm xúc, lưu kết quả vào backend /image1,2,3 theo từng cam .
+
+cơ sở dữ liệu : Lưu trữ dữ liệu ( cảm xúc, thời gian, số cam , tài khoản đăng nhập .
+
+
+
+Component	Công nghệ
+Frontend	React.js + WebRTC
+Backend	Python 
+Emotion Recognition	API của Microsoft Azure Face API, Google Cloud Vision, hoặc OpenCV + Deep Learning model, deepface , mediapipe
+
