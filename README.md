@@ -137,3 +137,22 @@ project/
 3. **Lỗi truy cập camera**:
    - Đảm bảo camera được kết nối và hoạt động
    - Kiểm tra quyền truy cập camera trong trình duyệt 
+
+# Cấu hình môi trường
+
+Để thay đổi địa chỉ IP của server API:
+
+1. **Môi trường phát triển**: Chỉnh sửa file `frontend/.env.development`
+   ```
+   REACT_APP_API_URL=http://localhost:5000
+   ```
+
+2. **Môi trường sản xuất**: Chỉnh sửa file `frontend/.env.production` trước khi build
+   ```
+   REACT_APP_API_URL=http://your-server-ip:5000
+   ```
+
+3. **Khi triển khai**: Có thể truyền biến môi trường trực tiếp khi chạy lệnh build
+   ```
+   REACT_APP_API_URL=http://171.224.199.63:5000 npm run build
+   ``` 

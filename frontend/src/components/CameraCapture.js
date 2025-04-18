@@ -57,7 +57,7 @@ const CameraCapture = () => {
   const [webcamHeight, setWebcamHeight] = useState(CAMERA_RESOLUTIONS[2].height);
 
   // API endpoint
-  const API_URL = 'http://localhost:5000/api';
+  const API_URL = `${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/api`;
 
   // Lấy danh sách thiết bị camera
   useEffect(() => {

@@ -8,13 +8,27 @@ import cv2
 
 db = SQLAlchemy()
 camera_bp = Blueprint('camera', __name__)
-CORS(camera_bp, resources={
-    r"/api/*": {
-        "origins": ["http://localhost:3000"],
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
-    }
-})
+
+# Xử lý CORS trực tiếp tại blueprint
+CORS(camera_bp, resources={r"/api/*": {
+    "origins": ["http://localhost:3000"],
+    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Authorization"],
+    "supports_credentials": True
+}})
+
+# Thêm decorator xử lý CORS cho mỗi route
+def handle_options(f):
+    def decorated(*args, **kwargs):
+        if request.method == 'OPTIONS':
+            response = jsonify({})
+            response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
+            return response
+        return f(*args, **kwargs)
+    decorated.__name__ = f.__name__
+    return decorated
 
 class Camera(db.Model):
     __tablename__ = 'cameras'
@@ -114,39 +128,54 @@ class Camera(db.Model):
             self.connection_status = 'error'
             return False
 
-@camera_bp.route('/api/cameras', methods=['GET'])
+@camera_bp.route('/api/cameras', methods=['GET', 'OPTIONS'])
+@handle_options
 def get_cameras():
-    cameras = Camera.query.all()
-    return jsonify([{
-        'id': camera.id,
-        'name': camera.name,
-        'location': camera.location,
-        'type': camera.camera_type,
-        'status': camera.status,
-        'stream_url': camera.stream_url,
-        'ip_address': camera.ip_address,
-        'port': camera.port,
-        'connection_status': camera.connection_status,
-        'last_connected': camera.last_connected.isoformat() if camera.last_connected else None
-    } for camera in cameras])
+    try:
+        cameras = Camera.query.all()
+        result = []
+        for camera in cameras:
+            camera_data = {
+                'id': camera.id,
+                'name': camera.name,
+                'location': camera.location,
+                'camera_type': camera.camera_type,
+                'status': camera.status,
+                'stream_url': camera.stream_url,
+                'ip_address': camera.ip_address,
+                'port': camera.port,
+                'connection_status': camera.connection_status,
+                'last_connected': camera.last_connected.isoformat() if camera.last_connected else None
+            }
+            result.append(camera_data)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error getting cameras: {e}")
+        return jsonify({"error": str(e)}), 500
 
-@camera_bp.route('/api/cameras/<int:camera_id>', methods=['GET'])
+@camera_bp.route('/api/cameras/<int:camera_id>', methods=['GET', 'OPTIONS'])
+@handle_options
 def get_camera(camera_id):
-    camera = Camera.query.get_or_404(camera_id)
-    return jsonify({
-        'id': camera.id,
-        'name': camera.name,
-        'location': camera.location,
-        'type': camera.camera_type,
-        'status': camera.status,
-        'stream_url': camera.stream_url,
-        'ip_address': camera.ip_address,
-        'port': camera.port,
-        'connection_status': camera.connection_status,
-        'last_connected': camera.last_connected.isoformat() if camera.last_connected else None
-    })
+    try:
+        camera = Camera.query.get_or_404(camera_id)
+        return jsonify({
+            'id': camera.id,
+            'name': camera.name,
+            'location': camera.location,
+            'camera_type': camera.camera_type,
+            'status': camera.status,
+            'stream_url': camera.stream_url,
+            'ip_address': camera.ip_address,
+            'port': camera.port,
+            'connection_status': camera.connection_status,
+            'last_connected': camera.last_connected.isoformat() if camera.last_connected else None
+        })
+    except Exception as e:
+        print(f"Error getting camera {camera_id}: {e}")
+        return jsonify({"error": str(e)}), 500
 
-@camera_bp.route('/api/cameras', methods=['POST'])
+@camera_bp.route('/api/cameras', methods=['POST', 'OPTIONS'])
+@handle_options
 def add_camera():
     data = request.get_json()
     
@@ -201,9 +230,13 @@ def add_camera():
         'message': 'Camera added successfully'
     }), 201
 
-@camera_bp.route('/api/cameras/test', methods=['POST'])
+@camera_bp.route('/api/cameras/test', methods=['POST', 'OPTIONS'])
+@handle_options
 def test_camera():
     """Test camera connection"""
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+        
     try:
         data = request.get_json()
         

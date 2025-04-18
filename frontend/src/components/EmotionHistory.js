@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Container, Row, Col, Card, Button, Alert, Spinner, Pagination, Form, Image } from 'react-bootstrap';
 import axios from 'axios';
 
+// API endpoint
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
 // Ánh xạ tên cảm xúc sang tiếng Việt
 const emotionLabels = {
   'angry': 'Giận dữ',
@@ -44,7 +47,7 @@ const EmotionHistory = () => {
   // Tải danh sách camera khi component mount
   useEffect(() => {
     console.log("Fetching cameras...");
-    axios.get('/api/cameras')
+    axios.get(`${API_URL}/api/cameras`)
       .then(response => {
         console.log("Cameras response:", response.data);
         setCameras(response.data || []);
@@ -69,7 +72,7 @@ const EmotionHistory = () => {
       const offset = (page - 1) * itemsPerPage;
       
       // Xây dựng URL với các tham số
-      let url = `/api/emotions?offset=${offset}&limit=${itemsPerPage}&include_images=true`;
+      let url = `${API_URL}/api/emotions?offset=${offset}&limit=${itemsPerPage}&include_images=true`;
       
       // Thêm các tham số lọc
       if (selectedCamera) {

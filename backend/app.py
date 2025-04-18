@@ -34,13 +34,13 @@ from camera_manager import camera_bp, Camera, db
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={
-    r"/api/*": {
-        "origins": ["http://localhost:3000"],
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
-    }
-})
+# Cấu hình CORS đơn giản cho toàn bộ ứng dụng
+CORS(app, origins=["http://localhost:3000"], 
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"])
+
+# Đăng ký blueprint camera
+app.register_blueprint(camera_bp)
 
 # Cấu hình PostgreSQL
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres:123456@localhost/emotion_detection1.2')
