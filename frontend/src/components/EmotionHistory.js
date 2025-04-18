@@ -31,9 +31,15 @@ const EmotionHistory = () => {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
-  const [selectedCamera, setSelectedCamera] = useState('');
   const [cameras, setCameras] = useState([]);
   const itemsPerPage = 5;
+  
+  // Các tham số lọc
+  const [selectedCamera, setSelectedCamera] = useState('');
+  const [selectedEmotion, setSelectedEmotion] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [filterApplied, setFilterApplied] = useState(false);
 
   // Tải danh sách camera khi component mount
   useEffect(() => {
@@ -41,7 +47,7 @@ const EmotionHistory = () => {
     axios.get('/api/cameras')
       .then(response => {
         console.log("Cameras response:", response.data);
-        setCameras(response.data.cameras || []);
+        setCameras(response.data || []);
       })
       .catch(error => {
         console.error("Error fetching cameras:", error);
@@ -49,10 +55,12 @@ const EmotionHistory = () => {
       });
   }, []);
 
-  // Tải lịch sử cảm xúc khi trang hoặc camera thay đổi
+  // Tải lịch sử cảm xúc khi trang hoặc các bộ lọc thay đổi
   useEffect(() => {
-    fetchEmotions();
-  }, [page, selectedCamera]);
+    if (!filterApplied) {
+      fetchEmotions();
+    }
+  }, [page, filterApplied]);
 
   const fetchEmotions = async () => {
     setLoading(true);
@@ -62,8 +70,27 @@ const EmotionHistory = () => {
       
       // Xây dựng URL với các tham số
       let url = `/api/emotions?offset=${offset}&limit=${itemsPerPage}&include_images=true`;
+      
+      // Thêm các tham số lọc
       if (selectedCamera) {
         url += `&camera_id=${selectedCamera}`;
+      }
+      
+      // Lọc theo khoảng thời gian
+      if (startDate) {
+        const formattedStartDate = new Date(startDate).toISOString();
+        url += `&start_date=${formattedStartDate}`;
+      }
+      
+      if (endDate) {
+        const formattedEndDate = new Date(endDate);
+        formattedEndDate.setHours(23, 59, 59); // Kết thúc của ngày
+        url += `&end_date=${formattedEndDate.toISOString()}`;
+      }
+      
+      // Lọc theo cảm xúc
+      if (selectedEmotion) {
+        url += `&emotion=${selectedEmotion}`;
       }
       
       console.log("Fetching emotions from:", url);
@@ -71,7 +98,18 @@ const EmotionHistory = () => {
       const response = await axios.get(url);
       console.log("Emotions response:", response.data);
       
-      setEmotions(response.data.emotions || []);
+      // Lọc thêm ở phía client nếu backend không hỗ trợ đầy đủ các bộ lọc
+      let filteredEmotions = response.data.emotions || [];
+      
+      // Lọc theo cảm xúc ở phía client (nếu backend không hỗ trợ)
+      if (selectedEmotion && !url.includes('&emotion=')) {
+        filteredEmotions = filteredEmotions.filter(emotion => {
+          const result = emotion.emotion_result || {};
+          return result.dominant_emotion === selectedEmotion;
+        });
+      }
+      
+      setEmotions(filteredEmotions);
       setTotalItems(response.data.total || 0);
       setTotalPages(Math.ceil((response.data.total || 0) / itemsPerPage));
       setError(null);
@@ -89,10 +127,22 @@ const EmotionHistory = () => {
     setPage(newPage);
   };
 
-  // Xử lý thay đổi camera
-  const handleCameraChange = (e) => {
-    setSelectedCamera(e.target.value);
-    setPage(1); // Reset về trang 1 khi thay đổi camera
+  // Xử lý áp dụng bộ lọc
+  const handleApplyFilter = () => {
+    setPage(1); // Reset về trang 1 khi thay đổi bộ lọc
+    setFilterApplied(true); // Đánh dấu đã áp dụng bộ lọc
+    fetchEmotions();
+  };
+  
+  // Xử lý reset bộ lọc
+  const handleResetFilter = () => {
+    setSelectedCamera('');
+    setSelectedEmotion('');
+    setStartDate('');
+    setEndDate('');
+    setPage(1);
+    setFilterApplied(false);
+    fetchEmotions();
   };
 
   // Tìm tên camera theo ID
@@ -108,13 +158,13 @@ const EmotionHistory = () => {
       {/* Filter controls */}
       <Card className="mb-4">
         <Card.Body>
-          <Row>
-            <Col md={6}>
+          <Row className="mb-3">
+            <Col md={6} lg={3}>
               <Form.Group>
                 <Form.Label>Lọc theo Camera</Form.Label>
                 <Form.Select 
                   value={selectedCamera} 
-                  onChange={handleCameraChange}
+                  onChange={(e) => setSelectedCamera(e.target.value)}
                 >
                   <option value="">Tất cả Camera</option>
                   {cameras.map(camera => (
@@ -125,8 +175,56 @@ const EmotionHistory = () => {
                 </Form.Select>
               </Form.Group>
             </Col>
-            <Col md={6} className="d-flex align-items-end">
-              <Button variant="primary" onClick={() => fetchEmotions()}>
+            
+            <Col md={6} lg={3}>
+              <Form.Group>
+                <Form.Label>Lọc theo Cảm xúc</Form.Label>
+                <Form.Select
+                  value={selectedEmotion}
+                  onChange={(e) => setSelectedEmotion(e.target.value)}
+                >
+                  <option value="">Tất cả Cảm xúc</option>
+                  {Object.entries(emotionLabels).map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </Form.Select>
+              </Form.Group>
+            </Col>
+            
+            <Col md={6} lg={3}>
+              <Form.Group>
+                <Form.Label>Từ ngày</Form.Label>
+                <Form.Control
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                />
+              </Form.Group>
+            </Col>
+            
+            <Col md={6} lg={3}>
+              <Form.Group>
+                <Form.Label>Đến ngày</Form.Label>
+                <Form.Control
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                />
+              </Form.Group>
+            </Col>
+          </Row>
+          
+          <Row>
+            <Col className="d-flex gap-2">
+              <Button variant="primary" onClick={handleApplyFilter}>
+                Áp dụng
+              </Button>
+              <Button variant="secondary" onClick={handleResetFilter}>
+                Xóa bộ lọc
+              </Button>
+              <Button variant="outline-primary" onClick={fetchEmotions}>
                 Làm mới
               </Button>
             </Col>
@@ -153,7 +251,7 @@ const EmotionHistory = () => {
           {/* No data message */}
           {emotions.length === 0 ? (
             <Alert variant="info">
-              Không có dữ liệu lịch sử cảm xúc.
+              Không có dữ liệu lịch sử cảm xúc phù hợp với điều kiện lọc.
             </Alert>
           ) : (
             <>
@@ -259,51 +357,51 @@ const EmotionHistory = () => {
               {totalPages > 1 && (
                 <div className="d-flex justify-content-center mt-4">
                   <Pagination>
-                    <Pagination.First
-                      onClick={() => handlePageChange(1)}
+                    <Pagination.First 
+                      onClick={() => handlePageChange(1)} 
                       disabled={page === 1}
                     />
-                    <Pagination.Prev
-                      onClick={() => handlePageChange(page - 1)}
+                    <Pagination.Prev 
+                      onClick={() => handlePageChange(Math.max(1, page - 1))} 
                       disabled={page === 1}
                     />
                     
-                    {/* Show page numbers */}
-                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                      // Calculate which pages to show
-                      let pageNum;
-                      if (totalPages <= 5) {
-                        pageNum = i + 1;
-                      } else if (page <= 3) {
-                        pageNum = i + 1;
-                      } else if (page >= totalPages - 2) {
-                        pageNum = totalPages - 4 + i;
-                      } else {
-                        pageNum = page - 2 + i;
+                    {[...Array(totalPages).keys()].map(i => {
+                      const pageNum = i + 1;
+                      // Hiển thị 5 trang xung quanh trang hiện tại
+                      if (pageNum === 1 || pageNum === totalPages || 
+                          (pageNum >= page - 2 && pageNum <= page + 2)) {
+                        return (
+                          <Pagination.Item 
+                            key={pageNum} 
+                            active={pageNum === page}
+                            onClick={() => handlePageChange(pageNum)}
+                          >
+                            {pageNum}
+                          </Pagination.Item>
+                        );
+                      } else if (pageNum === page - 3 || pageNum === page + 3) {
+                        return <Pagination.Ellipsis key={pageNum} />;
                       }
-                      
-                      return (
-                        <Pagination.Item
-                          key={pageNum}
-                          active={pageNum === page}
-                          onClick={() => handlePageChange(pageNum)}
-                        >
-                          {pageNum}
-                        </Pagination.Item>
-                      );
+                      return null;
                     })}
                     
-                    <Pagination.Next
-                      onClick={() => handlePageChange(page + 1)}
+                    <Pagination.Next 
+                      onClick={() => handlePageChange(Math.min(totalPages, page + 1))} 
                       disabled={page === totalPages}
                     />
-                    <Pagination.Last
-                      onClick={() => handlePageChange(totalPages)}
+                    <Pagination.Last 
+                      onClick={() => handlePageChange(totalPages)} 
                       disabled={page === totalPages}
                     />
                   </Pagination>
                 </div>
               )}
+              
+              {/* Total count */}
+              <div className="text-center mt-3 mb-5">
+                <p>Tổng cộng: {totalItems} kết quả</p>
+              </div>
             </>
           )}
         </>

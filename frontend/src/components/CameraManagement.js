@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Table, Button, Form, Modal, Alert, Spinner, Badge } from 'react-bootstrap';
+import { Card, Table, Button, Form, Modal, Alert, Spinner, Badge, Row, Col } from 'react-bootstrap';
 import axios from 'axios';
 
 const CameraManagement = () => {
@@ -11,8 +11,11 @@ const CameraManagement = () => {
   
   // Form state
   const [cameraName, setCameraName] = useState('');
-  const [cameraDescription, setCameraDescription] = useState('');
   const [cameraLocation, setCameraLocation] = useState('');
+  const [cameraType, setCameraType] = useState('webcam');
+  const [ipAddress, setIpAddress] = useState('');
+  const [port, setPort] = useState('4747');
+  const [testStatus, setTestStatus] = useState('');
   
   const API_URL = 'http://localhost:5000/api';
   
@@ -21,7 +24,7 @@ const CameraManagement = () => {
     try {
       setLoading(true);
       const response = await axios.get(`${API_URL}/cameras`);
-      setCameras(response.data.cameras || []);
+      setCameras(response.data || []);
       setError('');
     } catch (err) {
       console.error('Error fetching cameras:', err);
@@ -40,8 +43,11 @@ const CameraManagement = () => {
   const handleAddNew = () => {
     setEditingCamera(null);
     setCameraName('');
-    setCameraDescription('');
     setCameraLocation('');
+    setCameraType('webcam');
+    setIpAddress('');
+    setPort('4747');
+    setTestStatus('');
     setShowModal(true);
   };
   
@@ -49,9 +55,46 @@ const CameraManagement = () => {
   const handleEdit = (camera) => {
     setEditingCamera(camera);
     setCameraName(camera.name);
-    setCameraDescription(camera.description || '');
     setCameraLocation(camera.location || '');
+    setCameraType(camera.camera_type || 'webcam');
+    setIpAddress(camera.ip_address || '');
+    setPort(camera.port?.toString() || '4747');
+    setTestStatus('');
     setShowModal(true);
+  };
+
+  // Kiểm tra kết nối camera
+  const handleTestConnection = async () => {
+    if (cameraType === 'webcam') {
+      setTestStatus('success');
+      return;
+    }
+
+    if (!ipAddress || !port) {
+      setTestStatus('error');
+      setError('Vui lòng nhập địa chỉ IP và cổng');
+      return;
+    }
+
+    try {
+      setTestStatus('testing');
+      const response = await axios.post(`${API_URL}/cameras/test`, {
+        type: cameraType,
+        ip_address: ipAddress,
+        port: parseInt(port)
+      });
+
+      if (response.data.connection_status === 'connected') {
+        setTestStatus('success');
+        setError('');
+      } else {
+        setTestStatus('error');
+        setError('Không thể kết nối đến camera. Vui lòng kiểm tra lại thông tin.');
+      }
+    } catch (err) {
+      setTestStatus('error');
+      setError('Lỗi kiểm tra kết nối: ' + (err.response?.data?.message || err.message));
+    }
   };
   
   // Lưu camera (thêm mới hoặc cập nhật)
@@ -61,23 +104,28 @@ const CameraManagement = () => {
         setError('Tên camera không được để trống');
         return;
       }
+
+      if (cameraType !== 'webcam' && (!ipAddress || !port)) {
+        setError('Vui lòng nhập địa chỉ IP và cổng cho DroidCam/IP Camera');
+        return;
+      }
       
       setLoading(true);
       
+      const cameraData = {
+        name: cameraName,
+        location: cameraLocation,
+        type: cameraType,
+        ip_address: cameraType !== 'webcam' ? ipAddress : null,
+        port: cameraType !== 'webcam' ? parseInt(port) : null
+      };
+
       if (editingCamera) {
         // Cập nhật camera
-        await axios.put(`${API_URL}/cameras/${editingCamera.id}`, {
-          name: cameraName,
-          description: cameraDescription,
-          location: cameraLocation
-        });
+        await axios.put(`${API_URL}/cameras/${editingCamera.id}`, cameraData);
       } else {
         // Thêm camera mới
-        await axios.post(`${API_URL}/cameras`, {
-          name: cameraName,
-          description: cameraDescription,
-          location: cameraLocation
-        });
+        await axios.post(`${API_URL}/cameras`, cameraData);
       }
       
       // Tải lại danh sách camera
@@ -171,9 +219,10 @@ const CameraManagement = () => {
                   <tr>
                     <th>ID</th>
                     <th>Tên</th>
+                    <th>Loại</th>
                     <th>Vị trí</th>
                     <th>Trạng thái</th>
-                    <th>Lần cuối sử dụng</th>
+                    <th>Địa chỉ</th>
                     <th>Thao tác</th>
                   </tr>
                 </thead>
@@ -181,19 +230,17 @@ const CameraManagement = () => {
                   {cameras.map(camera => (
                     <tr key={camera.id}>
                       <td>{camera.id}</td>
-                      <td>
-                        {camera.name}
-                        {camera.description && (
-                          <div><small className="text-muted">{camera.description}</small></div>
-                        )}
-                      </td>
+                      <td>{camera.name}</td>
+                      <td>{camera.camera_type === 'droidcam' ? 'DroidCam' : camera.camera_type === 'ipcam' ? 'IP Camera' : 'Webcam'}</td>
                       <td>{camera.location || '-'}</td>
                       <td>
-                        <Badge bg={camera.is_active ? 'success' : 'secondary'}>
-                          {camera.is_active ? 'Hoạt động' : 'Tạm ngừng'}
+                        <Badge bg={camera.connection_status === 'connected' ? 'success' : camera.connection_status === 'error' ? 'danger' : 'warning'}>
+                          {camera.connection_status === 'connected' ? 'Đã kết nối' : camera.connection_status === 'error' ? 'Lỗi' : 'Chưa kết nối'}
                         </Badge>
                       </td>
-                      <td>{formatDateTime(camera.last_used)}</td>
+                      <td>
+                        {camera.camera_type !== 'webcam' ? `${camera.ip_address}:${camera.port}` : '-'}
+                      </td>
                       <td>
                         <Button
                           variant="outline-primary"
@@ -202,14 +249,6 @@ const CameraManagement = () => {
                           onClick={() => handleEdit(camera)}
                         >
                           Sửa
-                        </Button>
-                        <Button
-                          variant={camera.is_active ? 'outline-warning' : 'outline-success'}
-                          size="sm"
-                          className="me-2"
-                          onClick={() => handleToggleActive(camera)}
-                        >
-                          {camera.is_active ? 'Tạm ngừng' : 'Kích hoạt'}
                         </Button>
                         <Button
                           variant="outline-danger"
@@ -228,61 +267,104 @@ const CameraManagement = () => {
         </Card>
       )}
       
-      {/* Modal thêm/sửa camera */}
-      <Modal show={showModal} onHide={() => setShowModal(false)}>
+      <Modal show={showModal} onHide={() => setShowModal(false)} size="lg">
         <Modal.Header closeButton>
-          <Modal.Title>{editingCamera ? 'Chỉnh sửa camera' : 'Thêm camera mới'}</Modal.Title>
+          <Modal.Title>{editingCamera ? 'Chỉnh Sửa Camera' : 'Thêm Camera Mới'}</Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <Form>
             <Form.Group className="mb-3">
-              <Form.Label>Tên camera <span className="text-danger">*</span></Form.Label>
+              <Form.Label>Tên Camera</Form.Label>
               <Form.Control
                 type="text"
+                placeholder="Nhập tên camera"
                 value={cameraName}
                 onChange={(e) => setCameraName(e.target.value)}
-                placeholder="Nhập tên camera"
-                required
               />
             </Form.Group>
-            
+
             <Form.Group className="mb-3">
-              <Form.Label>Mô tả</Form.Label>
-              <Form.Control
-                as="textarea"
-                rows={2}
-                value={cameraDescription}
-                onChange={(e) => setCameraDescription(e.target.value)}
-                placeholder="Nhập mô tả (tùy chọn)"
-              />
+              <Form.Label>Loại Camera</Form.Label>
+              <Form.Select
+                value={cameraType}
+                onChange={(e) => setCameraType(e.target.value)}
+              >
+                <option value="webcam">Webcam</option>
+                <option value="droidcam">DroidCam</option>
+                <option value="ipcam">IP Camera</option>
+              </Form.Select>
             </Form.Group>
-            
+
             <Form.Group className="mb-3">
-              <Form.Label>Vị trí</Form.Label>
+              <Form.Label>Vị Trí</Form.Label>
               <Form.Control
                 type="text"
+                placeholder="Nhập vị trí đặt camera"
                 value={cameraLocation}
                 onChange={(e) => setCameraLocation(e.target.value)}
-                placeholder="Nhập vị trí camera (tùy chọn)"
               />
             </Form.Group>
+
+            {cameraType !== 'webcam' && (
+              <>
+                <Row>
+                  <Col md={6}>
+                    <Form.Group className="mb-3">
+                      <Form.Label>Địa Chỉ IP</Form.Label>
+                      <Form.Control
+                        type="text"
+                        placeholder="Ví dụ: 192.168.1.100"
+                        value={ipAddress}
+                        onChange={(e) => setIpAddress(e.target.value)}
+                      />
+                    </Form.Group>
+                  </Col>
+                  <Col md={6}>
+                    <Form.Group className="mb-3">
+                      <Form.Label>Cổng (Port)</Form.Label>
+                      <Form.Control
+                        type="text"
+                        placeholder="Mặc định: 4747"
+                        value={port}
+                        onChange={(e) => setPort(e.target.value)}
+                      />
+                    </Form.Group>
+                  </Col>
+                </Row>
+                <div className="mb-3">
+                  <Button
+                    variant="info"
+                    onClick={handleTestConnection}
+                    disabled={testStatus === 'testing'}
+                  >
+                    {testStatus === 'testing' ? (
+                      <>
+                        <Spinner animation="border" size="sm" className="me-2" />
+                        Đang kiểm tra...
+                      </>
+                    ) : (
+                      'Kiểm Tra Kết Nối'
+                    )}
+                  </Button>
+                  {testStatus === 'success' && (
+                    <Badge bg="success" className="ms-2">Kết nối thành công!</Badge>
+                  )}
+                  {testStatus === 'error' && (
+                    <Badge bg="danger" className="ms-2">Kết nối thất bại</Badge>
+                  )}
+                </div>
+              </>
+            )}
           </Form>
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={() => setShowModal(false)}>
-            Hủy bỏ
+            Hủy
           </Button>
           <Button variant="primary" onClick={handleSave} disabled={loading}>
             {loading ? (
               <>
-                <Spinner
-                  as="span"
-                  animation="border"
-                  size="sm"
-                  role="status"
-                  aria-hidden="true"
-                  className="me-2"
-                />
+                <Spinner animation="border" size="sm" className="me-2" />
                 Đang lưu...
               </>
             ) : (

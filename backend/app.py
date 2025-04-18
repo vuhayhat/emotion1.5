@@ -34,7 +34,13 @@ from camera_manager import camera_bp, Camera, db
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://localhost:3000"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # Cấu hình PostgreSQL
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres:123456@localhost/emotion_detection1.2')
@@ -412,7 +418,13 @@ def get_emotions():
         offset = request.args.get('offset', default=0, type=int)
         include_images = request.args.get('include_images', default=False, type=lambda v: v.lower() == 'true')
         
+        # Tham số bộ lọc mới
+        start_date = request.args.get('start_date', default=None)
+        end_date = request.args.get('end_date', default=None)
+        emotion_filter = request.args.get('emotion', default=None)
+        
         print(f"Getting emotions with params: camera_id={camera_id}, limit={limit}, offset={offset}, include_images={include_images}")
+        print(f"Filter params: start_date={start_date}, end_date={end_date}, emotion={emotion_filter}")
         
         # Xây dựng truy vấn
         query = Emotion.query
@@ -420,6 +432,28 @@ def get_emotions():
         # Lọc theo camera_id nếu được cung cấp
         if camera_id is not None:
             query = query.filter_by(camera_id=camera_id)
+        
+        # Lọc theo khoảng thời gian
+        if start_date:
+            try:
+                start_date_obj = datetime.datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                query = query.filter(Emotion.timestamp >= start_date_obj)
+                print(f"Filtering by start date: {start_date_obj}")
+            except ValueError as e:
+                print(f"Error parsing start_date: {e}")
+        
+        if end_date:
+            try:
+                end_date_obj = datetime.datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                query = query.filter(Emotion.timestamp <= end_date_obj)
+                print(f"Filtering by end date: {end_date_obj}")
+            except ValueError as e:
+                print(f"Error parsing end_date: {e}")
+        
+        # Lọc theo loại cảm xúc chiếm ưu thế
+        if emotion_filter:
+            query = query.filter(Emotion.dominant_emotion == emotion_filter)
+            print(f"Filtering by emotion: {emotion_filter}")
         
         # Đếm tổng số bản ghi
         total = query.count()
@@ -486,17 +520,7 @@ def get_emotions():
                                     emotion_dict['processed_image_base64'] = base64.b64encode(processed_data).decode('utf-8')
                             else:
                                 print(f"Warning: Processed image file not found: {abs_processed_path}")
-                                # Thử tìm file processed image trong cùng thư mục
-                                processed_dir = os.path.dirname(abs_processed_path)
-                                processed_files = [f for f in os.listdir(processed_dir) if f.endswith('_processed.jpg')]
-                                if processed_files:
-                                    print(f"Found alternative processed file: {processed_files[0]}")
-                                    alt_path = os.path.join(processed_dir, processed_files[0])
-                                    with open(alt_path, 'rb') as img_file:
-                                        processed_data = img_file.read()
-                                        emotion_dict['processed_image_base64'] = base64.b64encode(processed_data).decode('utf-8')
-                                else:
-                                    emotion_dict['processed_image_base64'] = None
+                                emotion_dict['processed_image_base64'] = None
                         else:
                             emotion_dict['processed_image_base64'] = None
                     except Exception as e:
@@ -698,97 +722,39 @@ def process_image():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
-# Hàm vẽ text tiếng Việt lên ảnh
-def draw_text_with_unicode(img, text, position, font_size, color, thickness=2, bg_color=None):
-    """Vẽ text Unicode (tiếng Việt) lên ảnh bằng Pillow thay vì OpenCV"""
-    # Chuyển đổi từ OpenCV (BGR) sang Pillow (RGB)
-    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    pil_img = Image.fromarray(rgb_img)
-    draw = ImageDraw.Draw(pil_img)
+# Hàm vẽ text trên ảnh - đơn giản hóa để tránh lỗi
+def draw_text(img, text, position, font_scale=0.7, color=(255, 255, 255), thickness=2, with_background=True):
+    """Vẽ text lên ảnh sử dụng OpenCV"""
+    x, y = position
     
-    # Tải font hỗ trợ tiếng Việt
-    # Sử dụng font mặc định nếu không tìm thấy font tùy chỉnh
-    try:
-        # Thử tìm font hỗ trợ tiếng Việt
-        font_paths = [
-            "C:\\Windows\\Fonts\\arial.ttf",  # Windows
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux
-            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",  # macOS
-            "arial.ttf"  # Thử tìm trong thư mục hiện tại
-        ]
+    # Nếu cần vẽ nền
+    if with_background:
+        # Lấy kích thước text
+        (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
         
-        font = None
-        for path in font_paths:
-            if os.path.exists(path):
-                print(f"Found font at: {path}")
-                font = ImageFont.truetype(path, font_size)
-                break
-        
-        if font is None:
-            # Nếu không tìm thấy font nào, sử dụng font mặc định
-            font = ImageFont.load_default()
-            print("Warning: Using default font, Vietnamese characters may not display correctly")
-    except Exception as e:
-        print(f"Font loading error: {e}")
-        font = ImageFont.load_default()
+        # Vẽ nền cho text
+        cv2.rectangle(img, (x, y - text_height - 5), (x + text_width, y + 5), (0, 0, 0), -1)
     
-    # Vẽ background nếu được yêu cầu
-    if bg_color:
-        # Tính toán kích thước văn bản - đảm bảo tương thích với tất cả phiên bản Pillow
-        try:
-            # Phương pháp 1: Dùng textbbox() (cho Pillow 9.2.0+)
-            if hasattr(draw, 'textbbox'):
-                print("Using textbbox() method for text size calculation")
-                bbox = draw.textbbox(position, text, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1] 
-            # Phương pháp 2: Dùng getbbox() (cho Pillow 8.0.0+)
-            elif hasattr(font, 'getbbox'):
-                print("Using getbbox() method for text size calculation")
-                bbox = font.getbbox(text)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
-            # Phương pháp 3: Dùng textsize() (cho phiên bản cũ)
-            elif hasattr(draw, 'textsize'):
-                print("Using textsize() method for text size calculation")
-                text_width, text_height = draw.textsize(text, font=font)
-            # Phương pháp 4: Dùng getsize() (cho phiên bản cũ)
-            elif hasattr(font, 'getsize'):
-                print("Using getsize() method for text size calculation")
-                text_width, text_height = font.getsize(text)
-            # Phương pháp 5: Fallback - ước tính kích thước dựa trên độ dài văn bản và font_size
-            else:
-                print("Using fallback method for text size calculation")
-                text_width = len(text) * font_size * 0.6  # Ước tính chiều rộng
-                text_height = font_size * 1.2  # Ước tính chiều cao
-        except Exception as e:
-            print(f"Error calculating text size: {e}")
-            # Fallback: Tạo hình chữ nhật lớn hơn để đảm bảo văn bản không bị cắt
-            text_width = len(text) * font_size * 0.7
-            text_height = font_size * 1.5
-        
-        x, y = position
-        # Vẽ nền cho văn bản, thêm padding để đảm bảo đủ không gian cho dấu tiếng Việt
-        padding_x, padding_y = font_size // 3, font_size // 3
-        draw.rectangle(
-            [(x - padding_x, y - padding_y), 
-              (x + text_width + padding_x, y + text_height + padding_y)], 
-            fill=bg_color
-        )
-    
-    # Vẽ văn bản
-    draw.text(position, text, font=font, fill=color)
-    
-    # Chuyển đổi trở lại định dạng OpenCV (BGR)
-    result_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-    return result_img
+    # Vẽ text
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
+    return img
+
+# Ánh xạ tên cảm xúc sang tiếng Việt
+emotion_labels_vi = {
+    'angry': 'Gian du',
+    'disgust': 'Ghe tom',
+    'fear': 'So hai',
+    'happy': 'Vui ve',
+    'sad': 'Buon ba',
+    'surprise': 'Ngac nhien',
+    'neutral': 'Binh thuong'
+}
 
 def detect_emotion(image_array):
     """Phát hiện cảm xúc từ mảng hình ảnh sử dụng OpenCV và DeepFace"""
     try:
         # In ra kích thước và kiểu dữ liệu của hình ảnh để debug
         print(f"Input image shape: {image_array.shape}, dtype: {image_array.dtype}")
-        print(f"Image min/max values: {np.min(image_array)}/{np.max(image_array)}")
         
         # Tạo bản sao để vẽ lên
         result_image = image_array.copy()
@@ -800,7 +766,6 @@ def detect_emotion(image_array):
         os.makedirs(debug_folder, exist_ok=True)
         debug_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         debug_input_path = os.path.join(debug_folder, f"{debug_timestamp}_input.jpg")
-        print(f"Saving debug input image to: {debug_input_path}")
         cv2.imwrite(debug_input_path, image_array)
         
         # Sử dụng OpenCV để phát hiện khuôn mặt
@@ -810,24 +775,16 @@ def detect_emotion(image_array):
         
         print(f"OpenCV detected {len(faces)} faces")
         
-        # Lưu ảnh grayscale để debug
-        debug_gray_path = os.path.join(debug_folder, f"{debug_timestamp}_gray.jpg")
-        cv2.imwrite(debug_gray_path, gray)
-        
         # Nếu không tìm thấy mặt, thử với các tham số khác
         if len(faces) == 0:
             print("Trying alternative face detection parameters...")
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
             print(f"OpenCV detected {len(faces)} faces with alternative parameters")
         
+        # Lấy timestamp hiện tại để hiển thị
+        timestamp = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        
         if len(faces) > 0:
-            # Lưu ảnh với khung mặt phát hiện được để debug
-            debug_faces_path = os.path.join(debug_folder, f"{debug_timestamp}_faces.jpg")
-            debug_faces_img = image_array.copy()
-            for (x, y, w, h) in faces:
-                cv2.rectangle(debug_faces_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.imwrite(debug_faces_path, debug_faces_img)
-            
             # Thử phân tích cảm xúc bằng DeepFace
             try:
                 print("Analyzing emotions with DeepFace...")
@@ -899,13 +856,7 @@ def detect_emotion(image_array):
                 import traceback
                 traceback.print_exc()
                 
-                # Lưu lại lỗi vào file để tiện debug
-                with open(os.path.join(debug_folder, f"{debug_timestamp}_error.txt"), 'w') as f:
-                    f.write(str(e))
-                    f.write("\n\n")
-                    traceback.print_exc(file=f)
-                
-                # Tạo kết quả mặc định với sự ngẫu nhiên khi DeepFace thất bại
+                # Tạo kết quả mặc định khi DeepFace thất bại
                 emotions = {
                     'happy': random.uniform(0.1, 0.3),
                     'sad': random.uniform(0.05, 0.2),
@@ -931,20 +882,6 @@ def detect_emotion(image_array):
                 
                 print(f"Using fallback emotions due to error: {result['emotion_percent']}")
                 
-            # Vẽ khung và thông tin cảm xúc lên hình ảnh
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Ánh xạ tên cảm xúc sang tiếng Việt
-            emotion_labels = {
-                'angry': 'Giận dữ',
-                'disgust': 'Ghê tởm',
-                'fear': 'Sợ hãi',
-                'happy': 'Vui vẻ',
-                'sad': 'Buồn bã',
-                'surprise': 'Ngạc nhiên',
-                'neutral': 'Bình thường'
-            }
-            
             # Màu sắc cho các cảm xúc khác nhau (BGR format)
             emotion_colors = {
                 'angry': (0, 0, 255),      # Đỏ
@@ -964,60 +901,16 @@ def detect_emotion(image_array):
                 # Vẽ khung quanh mặt
                 cv2.rectangle(result_image, (x, y), (x+w, y+h), color, 2)
                 
-                # Tạo nhãn với cảm xúc và thời gian
-                label = f"{emotion_labels.get(dominant, dominant)} ({result['emotion_percent'][dominant]}%)"
-                time_label = f"{timestamp}"
+                # Tạo nhãn cảm xúc + tỷ lệ phần trăm (sử dụng từ không dấu)
+                emotion_text = emotion_labels_vi.get(dominant, dominant)
+                label = f"{emotion_text}: {result['emotion_percent'][dominant]}%"
                 
-                # Vẽ hộp nền cho văn bản
-                # Sử dụng phương pháp cải tiến để vẽ text tiếng Việt
-                result_image = draw_text_with_unicode(
-                    result_image, 
-                    label, 
-                    (x+5, y-40), 
-                    24,  # font size 
-                    (255, 255, 255),  # text color (trắng)
-                    bg_color=color  # background color
-                )
+                # Vẽ nhãn cảm xúc phía trên khung mặt
+                draw_text(result_image, label, (x, y-30), font_scale=0.7, color=(255, 255, 255), thickness=2)
                 
-                result_image = draw_text_with_unicode(
-                    result_image, 
-                    time_label, 
-                    (x+5, y-10), 
-                    16,  # font size
-                    (255, 255, 255),  # text color (trắng)
-                    bg_color=color  # background color
-                )
-                
-                # Vẽ biểu đồ cảm xúc nhỏ
-                bar_height = 5
-                bar_width = w
-                bar_y = y + h + 10
-                
-                # Vẽ các thanh cảm xúc
-                for i, (emotion, percent) in enumerate(sorted(result['emotion_percent'].items(), 
-                                                            key=lambda x: x[1], reverse=True)):
-                    if i >= 4:  # Chỉ hiển thị 4 cảm xúc hàng đầu
-                        break
-                        
-                    e_color = emotion_colors.get(emotion, (128, 128, 128))
-                    e_width = int(bar_width * percent / 100)
-                    
-                    # Vẽ nền thanh
-                    cv2.rectangle(result_image, (x, bar_y + i*20), (x + bar_width, bar_y + i*20 + bar_height), 
-                                (50, 50, 50), -1)
-                    # Vẽ thanh cảm xúc
-                    cv2.rectangle(result_image, (x, bar_y + i*20), (x + e_width, bar_y + i*20 + bar_height), 
-                                e_color, -1)
-                    
-                    # Nhãn cảm xúc - dùng hàm vẽ text hỗ trợ tiếng Việt
-                    e_label = f"{emotion_labels.get(emotion, emotion)}: {percent}%"
-                    result_image = draw_text_with_unicode(
-                        result_image,
-                        e_label,
-                        (x, bar_y + i*20 + 12),
-                        14,  # font size
-                        (255, 255, 255)  # text color (trắng)
-                    )
+                # Vẽ timestamp
+                draw_text(result_image, timestamp, (x, y-10), font_scale=0.6, color=(255, 255, 255), thickness=1)
+            
         else:
             # Không tìm thấy khuôn mặt, tạo kết quả mặc định
             print("No faces detected, using default result")
@@ -1046,33 +939,9 @@ def detect_emotion(image_array):
                 'dominant_emotion': dominant_emotion
             }
             
-            # Vẽ một khung giả ở giữa hình
-            center_x = w // 4
-            center_y = h // 4
-            frame_w = w // 2
-            frame_h = h // 2
-            
-            cv2.rectangle(result_image, (center_x, center_y), (center_x+frame_w, center_y+frame_h), (0, 0, 255), 2)
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Thêm nhãn thông báo - dùng hàm vẽ text hỗ trợ tiếng Việt
-            result_image = draw_text_with_unicode(
-                result_image,
-                "Không phát hiện khuôn mặt",
-                (center_x+10, center_y-20),
-                24,  # font size
-                (255, 255, 255),  # text color (trắng)
-                bg_color=(0, 0, 255)  # background color (đỏ)
-            )
-            
-            result_image = draw_text_with_unicode(
-                result_image,
-                timestamp,
-                (center_x+10, center_y+10),
-                18,  # font size
-                (255, 255, 255),  # text color (trắng)
-                bg_color=(0, 0, 255)  # background color (đỏ)
-            )
+            # Vẽ thông báo trên ảnh - sử dụng từ không dấu
+            draw_text(result_image, "Khong phat hien khuon mat", (20, 40), font_scale=1.0, color=(255, 255, 255), thickness=2)
+            draw_text(result_image, timestamp, (20, 70), font_scale=0.7, color=(255, 255, 255), thickness=1)
         
         # Lưu thông tin hình ảnh đã xử lý vào kết quả
         _, buffer = cv2.imencode('.jpg', result_image)
@@ -1089,16 +958,6 @@ def detect_emotion(image_array):
         import traceback
         traceback.print_exc()
         
-        # Lưu thông tin lỗi vào file để debug
-        debug_folder = "debug_images"
-        os.makedirs(debug_folder, exist_ok=True)
-        debug_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        with open(os.path.join(debug_folder, f"{debug_timestamp}_critical_error.txt"), 'w') as f:
-            f.write(str(e))
-            f.write("\n\n")
-            traceback.print_exc(file=f)
-        
         # Trường hợp lỗi, trả về kết quả mẫu
         result = {
             'emotion': {
@@ -1112,47 +971,14 @@ def detect_emotion(image_array):
             }
         }
         
-        # Vẽ thông báo lỗi
-        h, w = image_array.shape[:2]
-        x = w // 4
-        y = h // 4
-        w_frame = w // 2
-        h_frame = h // 2
-        
+        # Vẽ thông báo lỗi - sử dụng từ không dấu
         result_image = image_array.copy()
-        cv2.rectangle(result_image, (x, y), (x+w_frame, y+h_frame), (0, 0, 255), 2)
-        
-        # Dùng hàm vẽ text hỗ trợ tiếng Việt
-        error_text = "Lỗi nhận diện: " + str(e)[:30]
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        result_image = draw_text_with_unicode(
-            result_image,
-            error_text,
-            (x+10, y-20),
-            20,  # font size
-            (255, 255, 255),  # text color (trắng)
-            bg_color=(0, 0, 255)  # background color (đỏ)
-        )
-        
-        result_image = draw_text_with_unicode(
-            result_image,
-            timestamp,
-            (x+10, y+10),
-            16,  # font size
-            (255, 255, 255),  # text color (trắng)
-            bg_color=(0, 0, 255)  # background color (đỏ)
-        )
+        draw_text(result_image, "Loi xu ly anh", (20, 40), font_scale=1.0, color=(255, 255, 255), thickness=2)
+        draw_text(result_image, timestamp, (20, 70), font_scale=0.7, color=(255, 255, 255), thickness=1)
         
         # Lưu hình ảnh đã xử lý
         _, buffer = cv2.imencode('.jpg', result_image)
         result['processed_image'] = base64.b64encode(buffer).decode('utf-8')
-        
-        # Lưu ảnh lỗi để debug
-        if not os.path.exists(debug_folder):
-            os.makedirs(debug_folder)
-        debug_error_path = os.path.join(debug_folder, f"{debug_timestamp}_error_image.jpg")
-        cv2.imwrite(debug_error_path, result_image)
         
         return result, result_image
 

@@ -14,6 +14,7 @@ import hashlib  # Thêm thư viện mã hóa mật khẩu
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash
+import requests
 
 # Thêm thư mục hiện tại vào đường dẫn để import module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -64,10 +65,50 @@ class Camera(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    last_connected = db.Column(db.DateTime)  # Thời gian kết nối cuối cùng
+    connection_status = db.Column(db.String(20), default='disconnected')  # connected, disconnected, error
     
     # Relationships
     user = db.relationship('User', backref=db.backref('cameras', lazy=True))
     emotions = db.relationship('Emotion', backref='camera', lazy=True)
+
+    def generate_stream_url(self):
+        """Tạo URL stream dựa trên loại camera"""
+        if self.camera_type == 'droidcam':
+            # DroidCam URL format
+            return f"http://{self.ip_address}:{self.port}/video"
+        elif self.camera_type == 'ipcam':
+            # IP Camera URL - có thể cần điều chỉnh theo loại camera
+            return f"http://{self.ip_address}:{self.port}/video"
+        return None
+
+    def test_connection(self):
+        """Kiểm tra kết nối với camera"""
+        try:
+            if self.camera_type in ['droidcam', 'ipcam']:
+                if not self.stream_url:
+                    return False
+                
+                # Thử kết nối đến camera
+                response = requests.get(self.stream_url, timeout=5)
+                if response.status_code == 200:
+                    self.connection_status = 'connected'
+                    self.last_connected = datetime.datetime.utcnow()
+                    return True
+            elif self.camera_type == 'webcam':
+                # Thử mở webcam
+                cap = cv2.VideoCapture(0)
+                if cap.isOpened():
+                    self.connection_status = 'connected'
+                    self.last_connected = datetime.datetime.utcnow()
+                    cap.release()
+                    return True
+            
+            self.connection_status = 'error'
+            return False
+        except Exception as e:
+            self.connection_status = 'error'
+            return False
 
 class Emotion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -145,7 +186,9 @@ def create_tables():
             stream_url VARCHAR(200),
             user_id INTEGER REFERENCES users(id),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_connected TIMESTAMP,
+            connection_status VARCHAR(20) DEFAULT 'disconnected'
         )
         """)
         
