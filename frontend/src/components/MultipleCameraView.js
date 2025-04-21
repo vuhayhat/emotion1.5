@@ -101,7 +101,7 @@ const MultipleCameraView = () => {
   }, []);
 
   // Start processing a camera
-  const startProcessing = async (cameraId) => {
+  const handleStartCamera = async (cameraId) => {
     setLoadingStates(prev => ({ ...prev, [cameraId]: true }));
     try {
       await apiService.cameras.startCamera(cameraId);
@@ -114,7 +114,7 @@ const MultipleCameraView = () => {
   };
 
   // Stop processing a camera
-  const stopProcessing = async (cameraId) => {
+  const handleStopCamera = async (cameraId) => {
     setLoadingStates(prev => ({ ...prev, [cameraId]: true }));
     try {
       await apiService.cameras.stopCamera(cameraId);
@@ -217,16 +217,16 @@ const MultipleCameraView = () => {
       }
     } else if (camera.camera_type === 'ipcam') {
       if (isActive) {
-        stopProcessing(cameraId);
+        handleStopCamera(cameraId);
       } else {
         await connectIpCamera(cameraId, settings);
       }
     } else {
       // Xử lý cho các loại camera khác
       if (isActive) {
-        stopProcessing(cameraId);
+        handleStopCamera(cameraId);
       } else {
-        startProcessing(cameraId);
+        handleStartCamera(cameraId);
       }
     }
   };
@@ -432,8 +432,8 @@ const MultipleCameraView = () => {
         <CameraPlaceholder
           camera={camera}
           isActive={activeStates[cameraId]}
-          onStart={startProcessing}
-          onStop={stopProcessing}
+          onStart={handleStartCamera}
+          onStop={handleStopCamera}
           loading={loadingStates[cameraId]}
         />
       </Col>

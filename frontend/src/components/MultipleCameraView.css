@@ -236,4 +236,50 @@
 
 .settings-button:hover i {
   animation: spin 0.5s ease;
+}
+
+.camera-grid-container {
+  padding: 20px;
+}
+
+.camera-grid-container .row {
+  margin: -10px;
+}
+
+.camera-grid-container .col {
+  padding: 10px;
+}
+
+/* Responsive grid adjustments */
+@media (max-width: 576px) {
+  .camera-grid-container {
+    padding: 10px;
+  }
+}
+
+/* Animation for camera transitions */
+.camera-placeholder {
+  transition: transform 0.2s ease-in-out;
+}
+
+.camera-placeholder:hover {
+  transform: translateY(-2px);
+}
+
+/* Grid layout improvements */
+@media (min-width: 768px) {
+  .camera-grid-container .row {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .camera-grid-container .col {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .camera-placeholder {
+    flex: 1;
+    margin-bottom: 20px;
+  }
 } 
