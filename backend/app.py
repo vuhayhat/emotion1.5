@@ -36,7 +36,7 @@ from flask_jwt_extended import JWTManager, jwt_required, create_access_token, ge
 from werkzeug.security import generate_password_hash
 
 # Import db và các model từ models.py
-from models import db, User, Camera, CameraGroup, CameraGroupAssociation, Emotion
+from models import db, User, Camera, CameraGroup, CameraGroupAssociation, Emotion, CameraSchedule, DetectionResult
 
 # Import blueprint từ camera_handler thay vì camera_manager
 from camera_handlers import get_active_camera, start_camera, stop_camera, stop_all_cameras
@@ -44,16 +44,15 @@ from camera_handlers import get_active_camera, start_camera, stop_camera, stop_a
 # Load biến môi trường từ file .env
 load_dotenv()
 
-# Cấu hình kết nối database
+# Cấu hình kết nối database PostgreSQL
 DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', '123456')
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '5432')
 DB_NAME = os.getenv('DB_NAME', 'emotion_detection1.3')
 
-# Thay đổi: Sử dụng SQLite thay vì PostgreSQL
-# DATABASE_URL = f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
-DATABASE_URL = 'sqlite:///emotion_detection.db'
+# Sử dụng PostgreSQL
+DATABASE_URL = f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
@@ -507,23 +506,67 @@ def update_camera(camera_id):
 
 @app.route('/api/cameras/<int:camera_id>', methods=['DELETE'])
 def delete_camera(camera_id):
-    """Xóa một camera (đánh dấu là không hoạt động)"""
+    """Xóa một camera khỏi database"""
     try:
-        camera = Camera.query.get(camera_id)
-        if not camera:
-            return jsonify({'error': f'Camera ID {camera_id} not found'}), 404
+        # Tìm camera trong database
+        camera = Camera.query.get_or_404(camera_id)
         
-        # Không xóa hoàn toàn, chỉ đánh dấu là không hoạt động
-        camera.is_active = False
+        # Xóa các bản ghi liên quan
+        # 1. Xóa lịch trình
+        CameraSchedule.query.filter_by(camera_id=camera_id).delete()
+        
+        # 2. Xóa kết quả emotion
+        emotions = Emotion.query.filter_by(camera_id=camera_id).all()
+        for emotion in emotions:
+            # Xóa các file hình ảnh liên quan
+            if emotion.image_path and os.path.exists(emotion.image_path):
+                os.remove(emotion.image_path)
+            if emotion.result_path and os.path.exists(emotion.result_path):
+                os.remove(emotion.result_path)
+            # Xóa bản ghi
+            db.session.delete(emotion)
+        
+        # 3. Xóa kết quả detection
+        detections = DetectionResult.query.filter_by(camera_id=camera_id).all()
+        for detection in detections:
+            # Xóa file hình ảnh nếu có
+            if detection.image_path and os.path.exists(detection.image_path):
+                os.remove(detection.image_path)
+            # Xóa bản ghi
+            db.session.delete(detection)
+        
+        # 4. Xóa liên kết với camera group
+        CameraGroupAssociation.query.filter_by(camera_id=camera_id).delete()
+        
+        # 5. Xóa camera
+        db.session.delete(camera)
+        
+        # Commit các thay đổi vào database
         db.session.commit()
+        
+        # Xóa thư mục hình ảnh của camera
+        camera_image_dir = os.path.join(app.config['UPLOAD_FOLDER'], f'camera{camera_id}')
+        if os.path.exists(camera_image_dir):
+            try:
+                import shutil
+                shutil.rmtree(camera_image_dir)
+                print(f"Deleted camera image directory: {camera_image_dir}")
+            except Exception as e:
+                print(f"Warning: Could not delete camera image directory: {e}")
         
         return jsonify({
             'success': True,
-            'message': f'Camera {camera_id} deactivated successfully'
+            'message': f'Camera {camera.name} đã được xóa thành công',
+            'camera_id': camera_id
         })
+        
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        print(f"Error deleting camera: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'Không thể xóa camera: {str(e)}'
+        }), 500
 
 @app.route('/api/status', methods=['GET'])
 def status():
@@ -1462,128 +1505,159 @@ def schedule_camera_capture():
         'schedule': job_info
     })
 
-@app.route('/api/cameras/schedule/<int:camera_id>', methods=['DELETE'])
+@app.route('/api/cameras/<int:camera_id>/schedule', methods=['DELETE'])
 def delete_camera_schedule(camera_id):
-    """Xóa lịch trình chụp ảnh của camera"""
-    # Kiểm tra camera có tồn tại không
-    camera = Camera.query.get(camera_id)
-    if not camera:
-        return jsonify({'error': f'Camera ID {camera_id} not found'}), 404
-    
-    # Kiểm tra xem có job nào cho camera này không
-    if str(camera_id) not in rtsp_camera_jobs:
-        return jsonify({'error': f'No schedule found for camera {camera_id}'}), 404
-    
-    # Xóa job
-    job_id = rtsp_camera_jobs[str(camera_id)]
+    """Xóa tất cả lịch trình của camera"""
     try:
-        scheduler.remove_job(job_id)
-        del rtsp_camera_jobs[str(camera_id)]
+        # Kiểm tra camera có tồn tại không
+        camera = Camera.query.get_or_404(camera_id)
+        
+        # Xóa tất cả lịch trình của camera này
+        schedules = CameraSchedule.query.filter_by(camera_id=camera_id).all()
+        for schedule in schedules:
+            db.session.delete(schedule)
+        
+        db.session.commit()
         
         return jsonify({
             'success': True,
-            'message': f'Schedule for camera {camera_id} deleted successfully'
+            'message': f'Đã xóa tất cả lịch trình cho camera {camera.name}'
         })
     except Exception as e:
-        return jsonify({'error': f'Error deleting schedule: {str(e)}'}), 500
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/cameras/<int:camera_id>/schedules/<int:schedule_id>', methods=['DELETE'])
+def delete_specific_schedule(camera_id, schedule_id):
+    """Xóa lịch trình cụ thể của camera"""
+    try:
+        # Kiểm tra camera có tồn tại không
+        camera = Camera.query.get_or_404(camera_id)
+        
+        # Kiểm tra lịch trình có tồn tại không
+        schedule = CameraSchedule.query.filter_by(id=schedule_id, camera_id=camera_id).first_or_404()
+        
+        # Xóa lịch trình
+        db.session.delete(schedule)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Đã xóa lịch trình cho camera {camera.name}'
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/cameras/schedule', methods=['GET'])
 def get_schedules():
     """Lấy danh sách tất cả các lịch trình đã cài đặt"""
-    result = []
-    
-    for camera_id, job_id in rtsp_camera_jobs.items():
-        job = scheduler.get_job(job_id)
-        if job:
-            # Xác định loại lịch trình
-            if 'interval' in job_id:
-                job_type = 'interval'
-                interval_seconds = job.trigger.interval.total_seconds()
-                interval_minutes = int(interval_seconds / 60)
-                
-                job_info = {
-                    'camera_id': int(camera_id),
-                    'job_id': job_id,
-                    'type': job_type,
-                    'interval_minutes': interval_minutes,
-                    'next_run': job.next_run_time.isoformat() if job.next_run_time else None
-                }
-            
-            else:  # cron
-                job_type = 'cron'
-                job_info = {
-                    'camera_id': int(camera_id),
-                    'job_id': job_id,
-                    'type': job_type,
-                    'hour': job.trigger.fields[5],  # hour field
-                    'minute': job.trigger.fields[6],  # minute field
-                    'next_run': job.next_run_time.isoformat() if job.next_run_time else None
-                }
-            
-            # Thêm thông tin camera
-            camera = Camera.query.get(int(camera_id))
-            if camera:
-                job_info['camera_name'] = camera.name
-                job_info['camera_location'] = camera.location
-                job_info['camera_type'] = camera.camera_type
-            
-            result.append(job_info)
-    
-    return jsonify(result)
+    try:
+        schedules = CameraSchedule.query.all()
+        return jsonify([{
+            'id': schedule.id,
+            'camera_id': schedule.camera_id,
+            'type': schedule.type,
+            'interval_minutes': schedule.interval_minutes,
+            'hour': schedule.hour,
+            'minute': schedule.minute,
+            'is_active': schedule.is_active,
+            'created_at': schedule.created_at.isoformat() if schedule.created_at else None,
+            'updated_at': schedule.updated_at.isoformat() if schedule.updated_at else None
+        } for schedule in schedules])
+    except Exception as e:
+        print(f"Error getting schedules: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'Không thể lấy danh sách lịch trình: {str(e)}'
+        }), 500
 
-@app.route('/api/cameras/schedule/<int:camera_id>', methods=['GET'])
-def get_camera_schedule(camera_id):
-    """Lấy thông tin lịch trình của camera cụ thể"""
-    # Kiểm tra camera có tồn tại không
-    camera = Camera.query.get(camera_id)
-    if not camera:
-        return jsonify({'error': f'Camera ID {camera_id} not found'}), 404
-    
-    # Kiểm tra xem có job nào cho camera này không
-    if str(camera_id) not in rtsp_camera_jobs:
-        return jsonify({'scheduled': False, 'message': f'No schedule found for camera {camera_id}'})
-    
-    # Lấy thông tin job
-    job_id = rtsp_camera_jobs[str(camera_id)]
-    job = scheduler.get_job(job_id)
-    
-    if not job:
-        # Có job ID nhưng không còn job trong scheduler
-        del rtsp_camera_jobs[str(camera_id)]
-        return jsonify({'scheduled': False, 'message': f'Schedule for camera {camera_id} not found in scheduler'})
-    
-    # Xác định loại lịch trình
-    if 'interval' in job_id:
-        job_type = 'interval'
-        interval_seconds = job.trigger.interval.total_seconds()
-        interval_minutes = int(interval_seconds / 60)
+@app.route('/api/cameras/schedule', methods=['POST'])
+def create_schedule():
+    """Tạo lịch trình mới cho camera"""
+    try:
+        data = request.get_json()
+        
+        # Kiểm tra dữ liệu đầu vào
+        if not data or 'camera_id' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'Thiếu thông tin camera_id'
+            }), 400
+            
+        # Tạo lịch trình mới
+        schedule = CameraSchedule(
+            camera_id=data['camera_id'],
+            type=data.get('schedule_type', 'interval'),
+            interval_minutes=data.get('interval_minutes'),
+            hour=data.get('hour'),
+            minute=data.get('minute'),
+            is_active=True
+        )
+        
+        db.session.add(schedule)
+        db.session.commit()
         
         return jsonify({
-            'scheduled': True,
-            'camera_id': camera_id,
-            'job_id': job_id,
-            'type': job_type,
-            'interval_minutes': interval_minutes,
-            'next_run': job.next_run_time.isoformat() if job.next_run_time else None,
-            'camera_name': camera.name,
-            'camera_location': camera.location,
-            'camera_type': camera.camera_type
+            'success': True,
+            'message': 'Lịch trình đã được tạo thành công',
+            'schedule': {
+                'id': schedule.id,
+                'camera_id': schedule.camera_id,
+                'type': schedule.type,
+                'interval_minutes': schedule.interval_minutes,
+                'hour': schedule.hour,
+                'minute': schedule.minute,
+                'is_active': schedule.is_active,
+                'created_at': schedule.created_at.isoformat() if schedule.created_at else None
+            }
         })
-    
-    else:  # cron
-        job_type = 'cron'
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error creating schedule: {e}")
         return jsonify({
-            'scheduled': True,
-            'camera_id': camera_id,
-            'job_id': job_id,
-            'type': job_type,
-            'hour': job.trigger.fields[5],  # hour field
-            'minute': job.trigger.fields[6],  # minute field
-            'next_run': job.next_run_time.isoformat() if job.next_run_time else None,
-            'camera_name': camera.name,
-            'camera_location': camera.location,
-            'camera_type': camera.camera_type
+            'success': False,
+            'message': f'Không thể tạo lịch trình: {str(e)}'
+        }), 500
+
+@app.route('/api/cameras/<int:camera_id>/schedules/<int:schedule_id>', methods=['PUT'])
+def update_camera_schedule_endpoint(camera_id, schedule_id):
+    """Cập nhật lịch trình của camera"""
+    try:
+        data = request.get_json()
+        schedule = CameraSchedule.query.filter_by(id=schedule_id, camera_id=camera_id).first()
+        
+        if not schedule:
+            return jsonify({'error': 'Lịch trình không tồn tại'}), 404
+
+        # Update fields
+        if 'type' in data:
+            schedule.type = data['type']
+        if 'interval_minutes' in data:
+            schedule.interval_minutes = data['interval_minutes']
+        if 'hour' in data:
+            schedule.hour = data['hour']
+        if 'minute' in data:
+            schedule.minute = data['minute']
+        if 'is_active' in data:
+            schedule.is_active = data['is_active']
+
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'schedule': schedule.to_dict()
         })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
 # Thêm route để phục vụ static files
 @app.route('/api/static/<path:filename>')
@@ -1908,6 +1982,56 @@ def get_camera_status(camera_id):
             'success': False,
             'message': f'Lỗi khi lấy trạng thái camera: {str(e)}'
         }), 500
+
+@app.route('/api/cameras/<int:camera_id>/schedules', methods=['GET'])
+def get_camera_schedules(camera_id):
+    """Lấy tất cả lịch trình của một camera"""
+    try:
+        camera = Camera.query.get(camera_id)
+        if not camera:
+            return jsonify({'error': 'Camera không tồn tại'}), 404
+            
+        schedules = CameraSchedule.query.filter_by(camera_id=camera_id).all()
+        return jsonify({
+            'success': True,
+            'schedules': [schedule.to_dict() for schedule in schedules]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cameras/<int:camera_id>/schedules', methods=['POST']) 
+def create_camera_schedule(camera_id):
+    """Tạo lịch trình mới cho camera"""
+    try:
+        data = request.get_json()
+        camera = Camera.query.get(camera_id)
+        if not camera:
+            return jsonify({'error': 'Camera không tồn tại'}), 404
+
+        # Validate input data
+        required_fields = ['type']
+        if not all(field in data for field in required_fields):
+            return jsonify({'error': 'Thiếu thông tin bắt buộc'}), 400
+
+        schedule = CameraSchedule(
+            camera_id=camera_id,
+            type=data['type'],
+            interval_minutes=data.get('interval_minutes'),
+            hour=data.get('hour'),
+            minute=data.get('minute'),
+            is_active=data.get('is_active', True)
+        )
+
+        db.session.add(schedule)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'schedule': schedule.to_dict()
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     # Thiết lập database

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Container, Button, Table, Modal, Form, Row, Col, Alert, Spinner, Badge } from 'react-bootstrap';
 import apiService from '../services/api';
+import axios from 'axios';
 
 const CameraManagement = () => {
   const [cameras, setCameras] = useState([]);
@@ -19,7 +20,7 @@ const CameraManagement = () => {
   const [connectedCameras, setConnectedCameras] = useState({});
   const [showNoCameraMessage, setShowNoCameraMessage] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [cameraStates, setCameraStates] = useState({});
+  const [testingConnection, setTestingConnection] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -34,11 +35,9 @@ const CameraManagement = () => {
   useEffect(() => {
     fetchCameras();
     loadSchedules();
-    fetchCameraStates();
   }, []);
 
   useEffect(() => {
-    // Thêm chức năng hiển thị nút tạo camera mặc định khi không có camera nào
     if (cameras && cameras.length === 0 && !loading && !error) {
       setShowNoCameraMessage(true);
     } else {
@@ -47,7 +46,6 @@ const CameraManagement = () => {
   }, [cameras, loading, error]);
 
   useEffect(() => {
-    // Ẩn thông báo thành công sau 3 giây
     if (success) {
       const timer = setTimeout(() => {
         setSuccess(null);
@@ -61,32 +59,24 @@ const CameraManagement = () => {
       setLoading(true);
       const response = await apiService.cameras.getAll();
       
-      // Kiểm tra và xử lý dữ liệu từ API
       if (response && response.data) {
-        // Nếu dữ liệu là mảng, sử dụng trực tiếp
         if (Array.isArray(response.data)) {
           setCameras(response.data);
-        } 
-        // Nếu dữ liệu có thuộc tính cameras hoặc camera, sử dụng nó
-        else if (response.data.cameras) {
+        } else if (response.data.cameras) {
           setCameras(response.data.cameras);
-        }
-        else if (response.data.camera) {
+        } else if (response.data.camera) {
           setCameras(response.data.camera);
-        }
-        // Trường hợp không có dữ liệu như mong đợi
-        else {
+        } else {
           console.warn("Dữ liệu trả về không đúng định dạng:", response.data);
           setCameras([]);
         }
       } else {
-        // Không có dữ liệu, hiển thị mảng rỗng
         setCameras([]);
       }
     } catch (error) {
       console.error("Error fetching cameras:", error);
       setError('Không thể tải danh sách camera');
-      setCameras([]); // Đặt cameras thành mảng rỗng khi có lỗi
+      setCameras([]);
     } finally {
       setLoading(false);
     }
@@ -192,259 +182,25 @@ const CameraManagement = () => {
   const handleDelete = async (camera) => {
     if (window.confirm(`Bạn có chắc muốn xóa camera "${camera.name}"?`)) {
       try {
-        await apiService.cameras.delete(camera.id);
-        setSuccess('Camera đã được xóa thành công');
-        fetchCameras();
-      } catch (err) {
-        setError('Không thể xóa camera');
-      }
-    }
-  };
-
-  const testConnection = async (camera) => {
-    setTestingConnection(true);
-    setTestResult(null);
-    
-    try {
-      let testData = {
-        type: camera.camera_type
-      };
-      
-      // Add fields based on camera type
-      if (['droidcam', 'ipcam', 'rtsp', 'mjpeg'].includes(camera.camera_type)) {
-        testData.ip_address = camera.ip_address;
-        testData.port = parseInt(camera.port);
+        setLoading(true);
+        const response = await apiService.cameras.delete(camera.id);
         
-        if (camera.camera_type === 'rtsp') {
-          testData.username = camera.username;
-          testData.password = camera.password;
-          testData.stream_path = camera.stream_path;
-        } else if (camera.camera_type === 'mjpeg') {
-          testData.stream_path = camera.stream_path;
+        if (response.data.success) {
+          setSuccess('Camera đã được xóa thành công');
+          // Cập nhật danh sách camera sau khi xóa
+          setCameras(prevCameras => prevCameras.filter(c => c.id !== camera.id));
+        } else {
+          setError(response.data.message || 'Không thể xóa camera');
         }
-      } else if (camera.camera_type === 'public_url') {
-        testData.stream_url = camera.stream_url;
+      } catch (err) {
+        console.error('Error deleting camera:', err);
+        setError(err.response?.data?.message || 'Không thể xóa camera. Vui lòng thử lại.');
+      } finally {
+        setLoading(false);
       }
-      
-      // If editing an existing camera, use the test endpoint for that camera
-      let response;
-      if (editingCamera) {
-        response = await apiService.cameras.testConnection(editingCamera.id);
-      } else {
-        response = await apiService.cameras.test(testData);
-      }
-      
-      setTestResult({
-        success: response.data.connection_status === 'connected',
-        message: response.data.message,
-        details: response.data
-      });
-    } catch (err) {
-      setTestResult({
-        success: false,
-        message: 'Kết nối thất bại',
-        details: err.response?.data || { error: err.message }
-      });
-      console.error('Test connection error:', err);
-    } finally {
-      setTestingConnection(false);
     }
   };
 
-  const formatDateTime = (timestamp) => {
-    if (!timestamp) return 'Chưa kết nối';
-    const date = new Date(timestamp);
-    return date.toLocaleString('vi-VN');
-  };
-
-  const renderConnectionBadge = (camera) => {
-    if (!camera.connection_status || camera.connection_status === 'disconnected') {
-      return <Badge bg="secondary">Không kết nối</Badge>;
-    } else if (camera.connection_status === 'connected') {
-      return <Badge bg="success">Đã kết nối</Badge>;
-    } else {
-      return <Badge bg="danger">Lỗi kết nối</Badge>;
-    }
-  };
-
-  const renderTestResult = () => {
-    if (!testResult) return null;
-    
-    return (
-      <Alert variant={testResult.success ? 'success' : 'danger'} className="mt-3">
-        <Alert.Heading>{testResult.success ? 'Kết nối thành công!' : 'Kết nối thất bại!'}</Alert.Heading>
-        <p>{testResult.message}</p>
-        {testResult.details && (
-          <pre className="small mt-2" style={{ whiteSpace: 'pre-wrap' }}>
-            {JSON.stringify(testResult.details, null, 2)}
-          </pre>
-        )}
-      </Alert>
-    );
-  };
-
-  const renderCameraTypeFields = () => {
-    switch (cameraType) {
-      case 'webcam':
-        return (
-          <Alert variant="info">
-            Sử dụng webcam của máy tính. Không cần thêm thông tin.
-          </Alert>
-        );
-      
-      case 'droidcam':
-      case 'ipcam':
-        return (
-          <>
-            <Form.Group className="mb-3">
-              <Form.Label>Địa chỉ IP</Form.Label>
-              <Form.Control
-                type="text"
-                value={ipAddress}
-                onChange={(e) => setIpAddress(e.target.value)}
-                placeholder="VD: 192.168.1.100"
-                required
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Port</Form.Label>
-              <Form.Control
-                type="number"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-                placeholder={cameraType === 'droidcam' ? "4747" : "554"}
-                required
-              />
-              {cameraType === 'droidcam' && (
-                <Form.Text className="text-muted">
-                  Port mặc định của DroidCam là 4747
-                </Form.Text>
-              )}
-            </Form.Group>
-          </>
-        );
-      
-      case 'rtsp':
-        return (
-          <>
-            <Form.Group className="mb-3">
-              <Form.Label>Địa chỉ IP</Form.Label>
-              <Form.Control
-                type="text"
-                value={ipAddress}
-                onChange={(e) => setIpAddress(e.target.value)}
-                placeholder="VD: 192.168.1.100"
-                required
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Port</Form.Label>
-              <Form.Control
-                type="number"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-                placeholder="554"
-                required
-              />
-              <Form.Text className="text-muted">
-                Port mặc định của camera RTSP là 554
-              </Form.Text>
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Tên đăng nhập (nếu có)</Form.Label>
-              <Form.Control
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Tên đăng nhập"
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Mật khẩu (nếu có)</Form.Label>
-              <Form.Control
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Mật khẩu"
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Đường dẫn stream</Form.Label>
-              <Form.Control
-                type="text"
-                value={streamPath}
-                onChange={(e) => setStreamPath(e.target.value)}
-                placeholder="VD: live/stream1"
-                required
-              />
-              <Form.Text className="text-muted">
-                Đường dẫn stream phụ thuộc vào model camera của bạn
-              </Form.Text>
-            </Form.Group>
-          </>
-        );
-      
-      case 'mjpeg':
-        return (
-          <>
-            <Form.Group className="mb-3">
-              <Form.Label>Địa chỉ IP</Form.Label>
-              <Form.Control
-                type="text"
-                value={ipAddress}
-                onChange={(e) => setIpAddress(e.target.value)}
-                placeholder="VD: 192.168.1.100"
-                required
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Port</Form.Label>
-              <Form.Control
-                type="number"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-                placeholder="80"
-                required
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Đường dẫn stream</Form.Label>
-              <Form.Control
-                type="text"
-                value={streamPath}
-                onChange={(e) => setStreamPath(e.target.value)}
-                placeholder="VD: video"
-                required
-              />
-            </Form.Group>
-          </>
-        );
-      
-      case 'public_url':
-        return (
-          <>
-            <Form.Group className="mb-3">
-              <Form.Label>URL Stream Public</Form.Label>
-              <Form.Control
-                type="text"
-                value={streamUrl}
-                onChange={(e) => setStreamUrl(e.target.value)}
-                placeholder="VD: https://xxxxx.ngrok.io/video"
-                required
-              />
-              <Form.Text className="text-muted">
-                URL công khai đến nguồn video (VD: URL từ ngrok, cloudflare tunnel, ...)
-              </Form.Text>
-            </Form.Group>
-          </>
-        );
-      
-      default:
-        return null;
-    }
-  };
-
-  // Load camera schedules
   const loadSchedules = async () => {
     try {
       const response = await apiService.schedules.getAll();
@@ -460,7 +216,6 @@ const CameraManagement = () => {
     }
   };
 
-  // Hàm xử lý chụp ảnh từ camera RTSP
   const handleCaptureRtsp = async (cameraId) => {
     setCaptureLoading(true);
     setSelectedCameraId(cameraId);
@@ -476,12 +231,10 @@ const CameraManagement = () => {
     }
   };
 
-  // Mở modal lên lịch camera
   const openScheduleModal = (cameraId) => {
     setSelectedCameraId(cameraId);
     setShowScheduleModal(true);
     
-    // Kiểm tra xem camera này đã có lịch chưa
     const existingSchedule = schedules.find(s => s.camera_id === cameraId);
     if (existingSchedule) {
       setScheduleType(existingSchedule.type);
@@ -492,7 +245,6 @@ const CameraManagement = () => {
         setScheduleMinute(existingSchedule.minute);
       }
     } else {
-      // Reset về giá trị mặc định
       setScheduleType('interval');
       setIntervalMinutes(15);
       setScheduleHour('*');
@@ -500,7 +252,6 @@ const CameraManagement = () => {
     }
   };
 
-  // Xử lý lưu lịch trình
   const handleSaveSchedule = async () => {
     try {
       const scheduleData = {
@@ -521,7 +272,6 @@ const CameraManagement = () => {
       setSuccess('Lịch trình đã được lưu thành công');
       loadSchedules();
       
-      // Tự động ẩn thông báo thành công sau 3 giây
       setTimeout(() => {
         setSuccess(null);
       }, 3000);
@@ -531,7 +281,6 @@ const CameraManagement = () => {
     }
   };
 
-  // Xử lý xóa lịch trình
   const handleDeleteSchedule = async (cameraId) => {
     if (window.confirm('Bạn có chắc muốn xóa lịch trình cho camera này?')) {
       try {
@@ -539,7 +288,6 @@ const CameraManagement = () => {
         loadSchedules();
         setSuccess('Lịch trình đã được xóa thành công');
         
-        // Tự động ẩn thông báo thành công sau 3 giây
         setTimeout(() => {
           setSuccess(null);
         }, 3000);
@@ -550,126 +298,20 @@ const CameraManagement = () => {
     }
   };
 
-  // Hàm kết nối với IP Camera để xử lý video
-  const handleConnectIpCam = async (cameraId) => {
-    try {
-      setConnectedCameras({
-        ...connectedCameras,
-        [cameraId]: {
-          isConnecting: true,
-          isConnected: false
-        }
-      });
-      
-      const response = await apiService.cameras.connectIpCam(cameraId);
-      
-      setConnectedCameras({
-        ...connectedCameras,
-        [cameraId]: {
-          isConnecting: false,
-          isConnected: true
-        }
-      });
-      
-      setSuccess(`Camera ${cameraId} đã kết nối thành công`);
-      fetchCameras();
-      
-      // Tự động ẩn thông báo thành công sau 3 giây
-      setTimeout(() => {
-        setSuccess(null);
-      }, 3000);
-    } catch (error) {
-      setConnectedCameras({
-        ...connectedCameras,
-        [cameraId]: {
-          isConnecting: false,
-          isConnected: false,
-          error: true
-        }
-      });
-      
-      setError('Không thể kết nối camera: ' + (error.response?.data?.error || error.message));
-      console.error("Error connecting camera:", error);
-    }
+  const formatDateTime = (timestamp) => {
+    if (!timestamp) return 'Chưa kết nối';
+    const date = new Date(timestamp);
+    return date.toLocaleString('vi-VN');
   };
 
-  // Hàm ngắt kết nối với camera
-  const handleDisconnectCamera = async (cameraId) => {
-    try {
-      await apiService.cameras.disconnect(cameraId);
-      
-      setConnectedCameras({
-        ...connectedCameras,
-        [cameraId]: {
-          isConnecting: false,
-          isConnected: false
-        }
-      });
-      
-      setSuccess(`Camera ${cameraId} đã ngắt kết nối thành công`);
-      fetchCameras();
-      
-      // Tự động ẩn thông báo thành công sau 3 giây
-      setTimeout(() => {
-        setSuccess(null);
-      }, 3000);
-    } catch (error) {
-      setError('Không thể ngắt kết nối camera: ' + (error.response?.data?.error || error.message));
-      console.error("Error disconnecting camera:", error);
+  const renderConnectionBadge = (camera) => {
+    if (!camera.connection_status || camera.connection_status === 'disconnected') {
+      return <Badge bg="secondary">Không kết nối</Badge>;
+    } else if (camera.connection_status === 'connected') {
+      return <Badge bg="success">Đã kết nối</Badge>;
+    } else {
+      return <Badge bg="danger">Lỗi kết nối</Badge>;
     }
-  };
-
-  // Hàm render nút kết nối/ngắt kết nối camera
-  const renderConnectionButton = (camera) => {
-    const connectionStatus = connectedCameras[camera.id];
-    
-    if (connectionStatus === 'connected') {
-      return (
-        <Button
-          variant="danger"
-          size="sm"
-          className="me-1"
-          onClick={() => handleDisconnectCamera(camera.id)}
-        >
-          Ngắt kết nối
-        </Button>
-      );
-    }
-    
-    if (connectionStatus === 'connecting') {
-      return (
-        <Button
-          variant="secondary"
-          size="sm"
-          className="me-1"
-          disabled
-        >
-          <Spinner
-            as="span"
-            animation="border"
-            size="sm"
-            role="status"
-            aria-hidden="true"
-          />
-          <span className="ms-1">Đang kết nối...</span>
-        </Button>
-      );
-    }
-    
-    if (camera.camera_type === 'ipcam' || camera.camera_type === 'droidcam') {
-      return (
-        <Button
-          variant="success"
-          size="sm"
-          className="me-1"
-          onClick={() => handleConnectIpCam(camera.id)}
-        >
-          Kết nối trực tiếp
-        </Button>
-      );
-    }
-    
-    return null;
   };
 
   const createDefaultCameras = async () => {
@@ -679,8 +321,9 @@ const CameraManagement = () => {
       await apiService.cameras.add({
         name: "Default Webcam",
         location: "Local",
-        type: "webcam",
-        status: "active"
+        camera_type: "webcam",
+        status: "active",
+        connection_status: "disconnected"
       });
       
       // Tải lại danh sách camera
@@ -697,104 +340,15 @@ const CameraManagement = () => {
   const handleToggleActive = async (camera) => {
     try {
       const newStatus = camera.status === 'active' ? 'inactive' : 'active';
-      await apiService.cameras.update(camera.id, {
+      await axios.put(`http://localhost:5000/api/cameras/${camera.id}`, {
         ...camera,
         status: newStatus
       });
-      setSuccess(`Đã ${newStatus === 'active' ? 'bật' : 'tắt'} camera ${camera.name}`);
+      setSuccess(`Đã ${newStatus === 'active' ? 'kích hoạt' : 'vô hiệu hóa'} camera ${camera.name}`);
       fetchCameras();
     } catch (err) {
       setError('Không thể thay đổi trạng thái camera');
     }
-  };
-
-  // Hàm để lấy trạng thái của tất cả camera
-  const fetchCameraStates = async () => {
-    try {
-      const cameras = await apiService.cameras.getAll();
-      const states = {};
-      
-      for (const camera of cameras.data) {
-        try {
-          const statusResponse = await apiService.cameras.getStatus(camera.id);
-          states[camera.id] = statusResponse.data.is_active;
-        } catch (error) {
-          console.error(`Error getting status for camera ${camera.id}:`, error);
-          states[camera.id] = false;
-        }
-      }
-      
-      setCameraStates(states);
-    } catch (error) {
-      console.error('Error fetching camera states:', error);
-    }
-  };
-
-  // Hàm xử lý bật camera
-  const handleStartCamera = async (cameraId) => {
-    try {
-      setLoading(true);
-      await apiService.cameras.startCamera(cameraId);
-      setCameraStates(prev => ({
-        ...prev,
-        [cameraId]: true
-      }));
-      setSuccess('Camera đã được bật thành công');
-    } catch (error) {
-      setError('Không thể bật camera. ' + (error.response?.data?.message || ''));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Hàm xử lý tắt camera
-  const handleStopCamera = async (cameraId) => {
-    try {
-      setLoading(true);
-      await apiService.cameras.stopCamera(cameraId);
-      setCameraStates(prev => ({
-        ...prev,
-        [cameraId]: false
-      }));
-      setSuccess('Camera đã được tắt thành công');
-    } catch (error) {
-      setError('Không thể tắt camera. ' + (error.response?.data?.message || ''));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Hàm render nút điều khiển camera
-  const renderCameraControls = (camera) => {
-    const isActive = cameraStates[camera.id];
-    
-    return (
-      <>
-        <Button
-          variant={isActive ? "danger" : "success"}
-          size="sm"
-          className="me-1"
-          onClick={() => isActive ? handleStopCamera(camera.id) : handleStartCamera(camera.id)}
-          disabled={loading}
-        >
-          {loading ? (
-            <>
-              <Spinner
-                as="span"
-                animation="border"
-                size="sm"
-                role="status"
-                aria-hidden="true"
-                className="me-1"
-              />
-              Đang xử lý...
-            </>
-          ) : (
-            isActive ? 'Tắt Camera' : 'Bật Camera'
-          )}
-        </Button>
-      </>
-    );
   };
 
   return (
@@ -857,92 +411,133 @@ const CameraManagement = () => {
               cameras.map((camera) => {
                 const schedule = schedules.find(s => s.camera_id === camera.id);
                 return (
-                <tr key={camera.id}>
-                  <td>{camera.id}</td>
-                  <td>{camera.name}</td>
-                  <td>{camera.location || '-'}</td>
-                  <td>{camera.camera_type}</td>
-                  <td>
-                    <Badge bg={cameraStates[camera.id] ? 'success' : 'danger'}>
-                      {cameraStates[camera.id] ? 'Đang hoạt động' : 'Đã tắt'}
-                    </Badge>
-                  </td>
-                  <td>{renderConnectionBadge(camera)}</td>
-                  <td>{formatDateTime(camera.last_connected)}</td>
-                  <td>
-                    {schedule ? (
-                      <div>
-                        {schedule.type === 'interval' ? (
-                          <Badge bg="info">Mỗi {schedule.interval_minutes} phút</Badge>
-                        ) : (
-                          <Badge bg="info">
-                            {schedule.hour === '*' ? 'Hàng giờ' : `${schedule.hour}:${schedule.minute}`}
-                          </Badge>
-                        )}
+                  <tr key={camera.id}>
+                    <td>{camera.id}</td>
+                    <td>{camera.name}</td>
+                    <td>{camera.location || '-'}</td>
+                    <td>{camera.camera_type}</td>
+                    <td>
+                      <Badge bg={camera.status === 'active' ? 'success' : 'danger'}>
+                        {camera.status === 'active' ? 'Hoạt động' : 'Không hoạt động'}
+                      </Badge>
+                    </td>
+                    <td>{renderConnectionBadge(camera)}</td>
+                    <td>{formatDateTime(camera.last_connected)}</td>
+                    <td>
+                      {schedule ? (
+                        <div>
+                          {schedule.type === 'interval' ? (
+                            <Badge bg="info">Mỗi {schedule.interval_minutes} phút</Badge>
+                          ) : (
+                            <Badge bg="info">
+                              {schedule.hour === '*' ? 'Hàng giờ' : `${schedule.hour}:${schedule.minute}`}
+                            </Badge>
+                          )}
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            className="ms-1"
+                            onClick={() => handleDeleteSchedule(camera.id)}
+                          >
+                            Xóa
+                          </Button>
+                        </div>
+                      ) : (
                         <Button
-                          variant="danger"
+                          variant="outline-primary"
                           size="sm"
-                          className="ms-1"
-                          onClick={() => handleDeleteSchedule(camera.id)}
+                          onClick={() => openScheduleModal(camera.id)}
                         >
-                          Xóa
+                          Đặt lịch
                         </Button>
-                      </div>
-                    ) : (
+                      )}
+                    </td>
+                    <td>
                       <Button
-                        variant="outline-primary"
-                        size="sm"
-                        onClick={() => openScheduleModal(camera.id)}
-                      >
-                        Đặt lịch
-                      </Button>
-                    )}
-                  </td>
-                  <td>
-                    {renderCameraControls(camera)}
-                    <Button
-                      variant="info"
-                      size="sm"
-                      className="me-1"
-                      onClick={() => handleEdit(camera)}
-                    >
-                      Sửa
-                    </Button>
-                    {renderConnectionButton(camera)}
-                    {camera.camera_type === 'rtsp' && (
-                      <Button
-                        variant="primary"
+                        variant="info"
                         size="sm"
                         className="me-1"
-                        onClick={() => handleCaptureRtsp(camera.id)}
-                        disabled={captureLoading && selectedCameraId === camera.id}
+                        onClick={() => handleEdit(camera)}
                       >
-                        {captureLoading && selectedCameraId === camera.id ? (
+                        <i className="bi bi-pencil me-1"></i>
+                        Sửa
+                      </Button>
+                      
+                      {camera.camera_type === 'rtsp' && (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          className="me-1"
+                          onClick={() => handleCaptureRtsp(camera.id)}
+                          disabled={captureLoading && selectedCameraId === camera.id}
+                        >
+                          {captureLoading && selectedCameraId === camera.id ? (
+                            <>
+                              <Spinner 
+                                as="span" 
+                                animation="border" 
+                                size="sm" 
+                                role="status" 
+                                aria-hidden="true"
+                              />
+                              <span className="ms-1">Đang chụp...</span>
+                            </>
+                          ) : (
+                            <>
+                              <i className="bi bi-camera me-1"></i>
+                              Chụp ảnh
+                            </>
+                          )}
+                        </Button>
+                      )}
+                      
+                      <Button
+                        variant="outline-info"
+                        size="sm"
+                        className="me-2"
+                        onClick={() => testConnection(camera)}
+                        disabled={testingConnection}
+                      >
+                        {testingConnection ? 'Đang kiểm tra...' : 'Kiểm tra kết nối'}
+                      </Button>
+                      
+                      <Button
+                        variant={camera.status === 'active' ? 'outline-warning' : 'outline-success'}
+                        size="sm"
+                        className="me-2"
+                        onClick={() => handleToggleActive(camera)}
+                      >
+                        {camera.status === 'active' ? 'Vô hiệu hóa' : 'Kích hoạt'}
+                      </Button>
+                      
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => handleDelete(camera)}
+                        disabled={loading}
+                      >
+                        {loading ? (
                           <>
-                            <Spinner 
-                              as="span" 
-                              animation="border" 
-                              size="sm" 
-                              role="status" 
+                            <Spinner
+                              as="span"
+                              animation="border"
+                              size="sm"
+                              role="status"
                               aria-hidden="true"
                             />
-                            <span className="ms-1">Đang chụp...</span>
+                            <span className="ms-1">Đang xóa...</span>
                           </>
                         ) : (
-                          'Chụp ảnh'
+                          <>
+                            <i className="bi bi-trash me-1"></i>
+                            Xóa
+                          </>
                         )}
                       </Button>
-                    )}
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      onClick={() => handleDelete(camera)}
-                    >
-                      Xóa
-                    </Button>
-                  </td>
-                </tr>
-              )})
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </Table>

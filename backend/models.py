@@ -94,7 +94,7 @@ class Camera(db.Model):
     
     # Định nghĩa relationships
     emotions = db.relationship('Emotion', backref='camera', lazy=True, cascade="all, delete-orphan")
-    schedules = db.relationship('CameraSchedule', backref='camera', lazy=True, cascade="all, delete-orphan")
+    schedules = db.relationship('CameraSchedule', backref=db.backref('camera_ref', lazy=True), lazy=True, cascade="all, delete-orphan")
     camera_groups = db.relationship('CameraGroupAssociation', back_populates='camera')
     
     def __init__(self, name, location=None, camera_type='webcam', status='active', ip_address=None, port=None, stream_url=None, user_id=None, connection_status='disconnected'):
@@ -186,41 +186,20 @@ class CameraGroup(db.Model):
         }
 
 class CameraSchedule(db.Model):
+    """Model cho lịch trình chụp ảnh của camera"""
     __tablename__ = 'camera_schedules'
-    
+
     id = db.Column(db.Integer, primary_key=True)
     camera_id = db.Column(db.Integer, db.ForeignKey('cameras.id'), nullable=False)
-    type = db.Column(db.String(20), default='interval')  # interval, fixed_time
-    interval_minutes = db.Column(db.Integer)  # For interval type
-    hour = db.Column(db.String(10))  # For fixed_time type (comma separated values or ranges)
-    minute = db.Column(db.String(10))  # For fixed_time type (comma separated values or ranges)
+    type = db.Column(db.String(20), nullable=False, default='interval')  # 'interval' hoặc 'cron'
+    interval_minutes = db.Column(db.Integer)  # Cho loại interval
+    hour = db.Column(db.String(10))  # Cho loại cron
+    minute = db.Column(db.String(10))  # Cho loại cron
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=get_vietnam_time)
-    updated_at = db.Column(db.DateTime, default=get_vietnam_time, onupdate=get_vietnam_time)
-    
-    def __init__(self, camera_id, type='interval', interval_minutes=None, hour=None, minute=None, is_active=True):
-        self.camera_id = camera_id
-        self.type = type
-        self.interval_minutes = interval_minutes
-        self.hour = hour
-        self.minute = minute
-        self.is_active = is_active
-        self.created_at = get_vietnam_time()
-        self.updated_at = get_vietnam_time()
-    
-    def to_dict(self):
-        """Chuyển đổi object thành dictionary"""
-        return {
-            'id': self.id,
-            'camera_id': self.camera_id,
-            'type': self.type,
-            'interval_minutes': self.interval_minutes,
-            'hour': self.hour,
-            'minute': self.minute,
-            'is_active': self.is_active,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
-        }
+    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
+    updated_at = db.Column(db.DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
+
+    # Bỏ định nghĩa relationship ở đây vì đã được định nghĩa trong class Camera
 
 class Emotion(db.Model):
     __tablename__ = 'emotions'

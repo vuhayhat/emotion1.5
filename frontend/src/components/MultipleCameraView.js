@@ -3,6 +3,7 @@ import { Container, Row, Col, Card, Button, Spinner, Alert, Badge, Form, Image }
 import apiService from '../services/api';
 import CameraSettings from './CameraSettings';
 import CameraPlaceholder from './CameraPlaceholder';
+import CameraSchedule from './CameraSchedule';
 import './MultipleCameraView.css';  // Thêm import CSS
 
 const MultipleCameraView = () => {
@@ -22,6 +23,8 @@ const MultipleCameraView = () => {
   const [isDetecting, setIsDetecting] = useState({});
   const [activeStates, setActiveStates] = useState({});
   const [loadingStates, setLoadingStates] = useState({});
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [selectedCameraId, setSelectedCameraId] = useState(null);
 
   // Format timestamp to readable format
   const formatDateTime = (timestamp) => {
@@ -440,6 +443,11 @@ const MultipleCameraView = () => {
     );
   };
 
+  const handleScheduleClick = (cameraId) => {
+    setSelectedCameraId(cameraId);
+    setShowSchedule(true);
+  };
+
   return (
     <Container fluid className="my-3">
       <div className="d-flex justify-content-between align-items-center mb-3">
@@ -575,6 +583,12 @@ const MultipleCameraView = () => {
           onSave={handleSaveSettings}
         />
       )}
+
+      <CameraSchedule
+        show={showSchedule}
+        onHide={() => setShowSchedule(false)}
+        cameraId={selectedCameraId}
+      />
     </Container>
   );
 };
