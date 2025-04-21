@@ -1,3 +1,83 @@
+/* Main app layout */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Header styling */
+.app-header {
+  background-color: #2c3e50;
+  color: white;
+  padding: 20px;
+  text-align: center;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 28px;
+}
+
+.app-header p {
+  margin: 10px 0 0;
+  font-size: 16px;
+  opacity: 0.8;
+}
+
+/* Navigation bar styling */
+.app-nav {
+  background-color: #34495e;
+  padding: 0 20px;
+}
+
+.app-nav ul {
+  display: flex;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.app-nav li {
+  margin: 0;
+  position: relative;
+}
+
+.app-nav a {
+  display: block;
+  color: white;
+  text-decoration: none;
+  padding: 15px 20px;
+  font-weight: 500;
+  transition: background-color 0.3s;
+}
+
+.app-nav a:hover {
+  background-color: #2980b9;
+}
+
+.app-nav a.active {
+  background-color: #3498db;
+}
+
+/* Main content area */
+.app-content {
+  flex: 1;
+  padding: 20px;
+  background-color: #f5f5f5;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .app-nav ul {
+    flex-direction: column;
+  }
+  
+  .app-nav a {
+    padding: 12px 20px;
+  }
+}
+
 .App {
   text-align: center;
   min-height: 100vh;

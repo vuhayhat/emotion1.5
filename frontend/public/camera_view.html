@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Camera IP Viewer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .video-container {
+            margin: 20px 0;
+            text-align: center;
+        }
+        img {
+            max-width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Camera IP Viewer</h1>
+        
+        <div class="controls">
+            <button onclick="refreshStream()">Làm mới</button>
+            <button onclick="window.open('http://192.168.1.7:8080')">Mở bảng điều khiển</button>
+        </div>
+        
+        <div class="video-container">
+            <img id="cameraFeed" src="http://192.168.1.7:8080/video" alt="Camera Feed">
+        </div>
+        
+        <p style="text-align: center;">
+            Nếu bạn không thấy hình ảnh, hãy kiểm tra lại IP camera và cổng<br>
+            Liên kết trực tiếp: <a href="http://192.168.1.7:8080/video" target="_blank">http://192.168.1.7:8080/video</a>
+        </p>
+    </div>
+
+    <script>
+        function refreshStream() {
+            const img = document.getElementById('cameraFeed');
+            // Thêm tham số thời gian để tránh cache
+            img.src = `http://192.168.1.7:8080/video?t=${new Date().getTime()}`;
+        }
+        
+        // Tự động làm mới stream mỗi 30 giây
+        setInterval(refreshStream, 30000);
+    </script>
+</body>
+</html> 

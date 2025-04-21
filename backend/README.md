@@ -101,4 +101,84 @@ The application includes comprehensive error handling for:
 2. Create feature branch
 3. Commit changes
 4. Push to branch
-5. Create Pull Request 
+5. Create Pull Request
+
+## Tính năng mới: Nhóm Camera và Nhận diện đa Camera
+
+### Nhóm Camera
+Hệ thống giờ đây hỗ trợ nhóm các camera thành các nhóm logic để dễ dàng quản lý và điều khiển. Mỗi nhóm camera có thể hoạt động độc lập và được cấu hình số lượng tối đa camera có thể hoạt động đồng thời.
+
+#### Các API quản lý nhóm camera:
+
+- **GET /api/camera-groups**: Lấy danh sách tất cả các nhóm camera.
+- **GET /api/camera-groups/:id**: Lấy thông tin chi tiết một nhóm camera.
+- **POST /api/camera-groups**: Tạo một nhóm camera mới.
+- **PUT /api/camera-groups/:id**: Cập nhật thông tin nhóm camera.
+- **DELETE /api/camera-groups/:id**: Xóa một nhóm camera.
+
+#### Các API liên kết camera và nhóm:
+
+- **PUT /api/cameras/:camera_id/group/:group_id**: Thêm camera vào nhóm.
+- **DELETE /api/cameras/:camera_id/group**: Xóa camera khỏi nhóm.
+- **PUT /api/cameras/:camera_id/priority**: Cập nhật mức độ ưu tiên của camera trong nhóm.
+
+#### Các API quản lý nhóm camera:
+
+- **POST /api/camera-groups/:id/connect**: Kết nối và xử lý tất cả camera trong một nhóm.
+- **POST /api/camera-groups/:id/disconnect**: Ngắt kết nối tất cả camera trong một nhóm.
+- **GET /api/camera-groups/:id/status**: Lấy trạng thái kết nối của tất cả camera trong một nhóm.
+- **GET /api/camera-groups/:id/results**: Lấy kết quả xử lý mới nhất từ tất cả camera trong một nhóm.
+
+### Hướng dẫn kết nối nhiều camera IP từ điện thoại
+
+1. **Cài đặt ứng dụng camera IP trên điện thoại**:
+   - Android: DroidCam, IP Webcam, etc.
+   - iOS: EpocCam, iVCam, etc.
+
+2. **Tạo nhóm camera**:
+   ```
+   POST /api/camera-groups
+   {
+     "name": "Camera IP từ điện thoại",
+     "description": "Các camera IP từ điện thoại trong phòng họp",
+     "max_concurrent_cameras": 8
+   }
+   ```
+
+3. **Thêm camera IP vào hệ thống**:
+   ```
+   POST /api/cameras
+   {
+     "name": "iPhone Camera 1",
+     "location": "Phòng họp 1",
+     "camera_type": "ipcam",
+     "ip_address": "192.168.1.100",
+     "port": 8080,
+     "camera_group_id": 2,
+     "priority": 10
+   }
+   ```
+
+4. **Kết nối và xử lý tất cả camera trong nhóm**:
+   ```
+   POST /api/camera-groups/2/connect
+   ```
+
+5. **Lấy kết quả từ tất cả camera đang hoạt động trong nhóm**:
+   ```
+   GET /api/camera-groups/2/results
+   ```
+
+### Cập nhật Cơ sở dữ liệu
+
+Để cập nhật cơ sở dữ liệu với cấu trúc mới hỗ trợ nhóm camera, chạy script migration:
+
+```
+python migrate_camera_groups.py
+```
+
+Script này sẽ:
+1. Tạo bảng `camera_groups` nếu chưa tồn tại
+2. Thêm cột `camera_group_id` và `priority` vào bảng `cameras`
+3. Tạo các nhóm camera mặc định
+4. Di chuyển camera hiện có vào nhóm phù hợp 

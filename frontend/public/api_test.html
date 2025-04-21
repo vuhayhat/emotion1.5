@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Connection Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        h1, h2 {
+            color: #333;
+        }
+        .control-panel {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+        button {
+            padding: 8px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+            min-height: 50px;
+        }
+        .success {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        .error {
+            color: #f44336;
+            font-weight: bold;
+        }
+        pre {
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>API Connection Test</h1>
+        <p>Dùng để kiểm tra API kết nối camera hoạt động</p>
+        
+        <div class="control-panel">
+            <h2>Test API Endpoints</h2>
+            <button onclick="testAPI('/api/cameras/test-api', 'GET')">Test API Đơn giản</button>
+            <button onclick="testAPI('/api/cameras', 'GET')">Danh sách Camera</button>
+            <button onclick="testAPI('/api/cameras/4/test', 'POST')">Test Camera ID 4</button>
+            <button onclick="testAPI('/api/cameras/4/connect/ipcam', 'POST')">Kết nối Camera IP</button>
+        </div>
+        
+        <div class="control-panel">
+            <h2>Kiểm tra CORS</h2>
+            <button onclick="testCORS()">Kiểm tra CORS</button>
+        </div>
+        
+        <div class="control-panel">
+            <h2>Thông tin Camera IP</h2>
+            <div>
+                <label for="ipAddress">Địa chỉ IP:</label>
+                <input type="text" id="ipAddress" value="192.168.1.7" style="margin-right: 10px;">
+                
+                <label for="port">Port:</label>
+                <input type="text" id="port" value="8080" style="width: 60px; margin-right: 10px;">
+                
+                <button onclick="testDirectConnection()">Kiểm tra kết nối trực tiếp</button>
+            </div>
+        </div>
+        
+        <div id="result">
+            <p><em>Kết quả sẽ hiển thị ở đây</em></p>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5000';
+        
+        async function testAPI(endpoint, method) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>Đang gửi yêu cầu...</p>';
+            
+            try {
+                const response = await fetch(`${API_URL}${endpoint}`, {
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <p class="success">Yêu cầu thành công: ${response.status} ${response.statusText}</p>
+                    <h3>Phản hồi:</h3>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <p class="error">Lỗi: ${error.message}</p>
+                    <p>Chi tiết:</p>
+                    <pre>${JSON.stringify(error, null, 2)}</pre>
+                `;
+            }
+        }
+        
+        function testCORS() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>Đang kiểm tra CORS...</p>';
+            
+            const xhr = new XMLHttpRequest();
+            xhr.open('OPTIONS', `${API_URL}/api/cameras/4/connect/ipcam`);
+            xhr.setRequestHeader('Access-Control-Request-Method', 'POST');
+            xhr.setRequestHeader('Origin', 'http://localhost:3000');
+            
+            xhr.onload = function() {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resultDiv.innerHTML = `
+                        <p class="success">CORS preflight thành công!</p>
+                        <p>Headers:</p>
+                        <pre>${xhr.getAllResponseHeaders()}</pre>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <p class="error">CORS preflight thất bại: ${xhr.status}</p>
+                    `;
+                }
+            };
+            
+            xhr.onerror = function() {
+                resultDiv.innerHTML = `
+                    <p class="error">Lỗi CORS: Không thể gửi yêu cầu preflight</p>
+                `;
+            };
+            
+            xhr.send();
+        }
+        
+        function testDirectConnection() {
+            const resultDiv = document.getElementById('result');
+            const ip = document.getElementById('ipAddress').value;
+            const port = document.getElementById('port').value;
+            const url = `http://${ip}:${port}/video`;
+            
+            resultDiv.innerHTML = `
+                <p>Đang kiểm tra kết nối đến: ${url}</p>
+                <div style="margin-top: 10px;">
+                    <img src="${url}" alt="Camera Feed" style="max-width: 100%; border: 1px solid #ddd;" 
+                        onerror="connectionFailed()" onload="connectionSuccess()">
+                </div>
+            `;
+        }
+        
+        function connectionSuccess() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML += `<p class="success">Kết nối thành công với camera!</p>`;
+        }
+        
+        function connectionFailed() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML += `<p class="error">Không thể kết nối với camera. Vui lòng kiểm tra IP và port.</p>`;
+        }
+    </script>
+</body>
+</html> 

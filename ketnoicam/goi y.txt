@@ -1,1 +1,0 @@
-làm 1 app có chức năng gửi yêu cầu kết nối camera lên website nhận diện cảm xúc khuôn mặt   

@@ -1,20 +1,110 @@
-làm dự án nhạn diện cảm xúc khuôn mặt bao gom
+# Mô Tả Dự Án Emotion Detection
 
+Dự án được chia thành **2 phần tách biệt**: **Backend** và **Frontend**, hoạt động độc lập nhưng liên kết thông qua API và cơ sở dữ liệu chung.
 
-tôi muốn làm dự án nhận diện cảm xúc khuôn mặt gồm fontend và backend , 
-fontend dùng camera thực (từ website , điện thoại , các loại cam khác ) để thu thập các ảnh liên tục theo số giây quy định gửi đến server nhận diện , '
-sau khi server nhận diện thì lưu lại vào backend/image1 hoặc image2 hoặc image3 theo thứ tự cam 1, 2 ,3 kết quả nhận diện , ảnh , thời gian 
+---
 
-Frontend: Web app truy cập camera lấy video từ cam website, cam điện thoại , cam camera an ninh, chụp ảnh định kỳ dùng nodejs
+## 1. Backend
 
-Backend: Nhận ảnh, gọi model nhận diện cảm xúc, lưu kết quả vào backend /image1,2,3 theo từng cam .
+### 1.1. Chức năng chính
+- **Tiếp nhận luồng video** từ nhiều nguồn:
+  - Webcam (trình duyệt)
+  - IP Camera (ví dụ điện thoại, camera mạng)
+  - Dễ dàng mở rộng thêm các loại camera khác trong tương lai
+- **Xử lý video**:
+  - Nhận diện khuôn mặt
+  - Dự đoán cảm xúc (sử dụng mô hình AI)
+  - Vẽ khung và nhãn cảm xúc trực tiếp lên từng khung hình
+- **Lưu trữ kết quả**:
+  - Hình ảnh/chùm ảnh đã gán khung cảm xúc
+  - Metadata (timestamp, camera_id, emotion_label)
+  - Thông tin camera và cấu hình lấy stream
+  - **(Mở rộng)**: Có thể lưu cả đoạn video ngắn tương ứng với khoảnh khắc cảm xúc
+- **Quản lý camera**:
+  - API thêm, sửa, xóa camera (loại, địa chỉ IP, port, path stream)
+  - Phục vụ thay đổi cấu hình động khi frontend request
+- **Xác thực & Phân quyền**:
+  - JWT cho API, phân quyền giữa user thường và admin
 
-cơ sở dữ liệu : Lưu trữ dữ liệu ( cảm xúc, thời gian, số cam , tài khoản đăng nhập .
+### 1.2. Kiến trúc & Công nghệ đề xuất
+- **Framework**: Node.js + Express (hoặc NestJS)
+- **Xử lý video & AI**:
+  - OpenCV (face detection)
+  - TensorFlow/PyTorch hoặc thư viện DeepFace (emotion recognition)
+- **Cơ sở dữ liệu**:
+  - SQL (PostgreSQL/MySQL) hoặc NoSQL (MongoDB)
+- **Queue / Worker**:
+  - Redis + Bull để xử lý bất đồng bộ, scale được nhiều camera
+- **Storage**:
+  - Lưu file ảnh lên hệ thống file server hoặc Object Storage (S3)
+- **Realtime**:
+  - Socket.IO hoặc WebSocket server để đẩy kết quả phân tích cảm xúc theo thời gian thực
 
+### 1.3. API Endpoint chính
+| Phương thức | Đường dẫn                | Mô tả                                     |
+|-------------|--------------------------|-------------------------------------------|
+| POST        | `/api/auth/login`        | Đăng nhập, trả về token JWT               |
+| GET         | `/api/auth/profile`      | Lấy thông tin người dùng hiện tại         |
+| GET         | `/api/cameras`           | Lấy danh sách camera                      |
+| POST        | `/api/cameras`           | Tạo mới camera (IP, port, type)           |
+| PUT         | `/api/cameras/:id`       | Cập nhật cấu hình camera                  |
+| DELETE      | `/api/cameras/:id`       | Xóa camera                                |
+| GET         | `/api/streams/:id`       | Lấy stream video thô (proxy đến source)   |
+| POST        | `/api/process/:id`       | Bắt đầu nhận diện luồng video             |
+| GET         | `/api/results`           | Lấy danh sách kết quả đã xử lý            |
+| GET         | `/api/statistics`        | (Mở rộng) Trả về thống kê cảm xúc         |
 
+---
 
-Component	Công nghệ
-Frontend	React.js + WebRTC
-Backend	Python 
-Emotion Recognition	API của Microsoft Azure Face API, Google Cloud Vision, hoặc OpenCV + Deep Learning model, deepface , mediapipe
+## 2. Frontend
 
+### 2.1. Chức năng chính
+- **Đăng nhập**: Giao diện nhập email + mật khẩu, gọi API `/api/auth/login`, lưu token JWT vào localStorage.
+- **Xác thực token**: Sau khi login thành công, mỗi lần frontend call API sẽ gắn Authorization Header `Bearer <token>`.
+- **Trang Dashboard** (`/`): Bao gồm các module:
+  1. **Nhận diện cảm xúc**
+     - Hiển thị **4 khung camera**:
+       - 1 khung chạy trực tiếp từ webcam (WebRTC)
+       - 3 khung hiển thị IP Cam qua URL `/video` (vd. `http://192.168.1.13:8080/video`)
+     - Điều khiển **Bật/Tắt** từng khung
+     - Khởi động luồng nhận diện bằng nút "Start" (gửi request `/api/process/:id`)
+  2. **Xem kết quả**
+     - Danh sách hình ảnh đã xử lý kèm nhãn cảm xúc và timestamp
+     - Filter / Search theo camera hoặc thời gian
+     - **(Mở rộng)**: Cho phép xem lại đoạn video tương ứng nếu có lưu
+  3. **Quản lý camera**
+     - Form thêm/sửa camera (type, IP, port, path)
+     - Dữ liệu được lưu vào database qua API backend
+  4. **Thống kê cảm xúc** *(mở rộng)*
+     - Biểu đồ Pie/Bar thể hiện tỷ lệ cảm xúc theo camera/thời gian
+     - Cập nhật theo thời gian thực qua WebSocket
+  5. **Thông báo cảm xúc đặc biệt** *(mở rộng)*
+     - Thông báo đẩy hoặc email khi phát hiện cảm xúc tiêu cực (ví dụ buồn, giận)
+
+### 2.2. Công nghệ đề xuất
+- **Framework**: React hoặc Vue.js
+- **UI Library**: Ant Design / Material UI / Vuetify
+- **State Management**: Redux / Vuex
+- **Authentication**: Sử dụng token (JWT) lưu trong `localStorage`
+- **Streaming**: HTML5 `<video>` hoặc `<img>` tag với `src` là endpoint backend
+- **API Client**: Axios hoặc Fetch API
+- **Realtime**: Socket.IO client hoặc WebSocket để nhận dữ liệu phân tích trực tiếp
+
+### 2.3. Luồng hoạt động
+1. Người dùng truy cập `/login`, nhập thông tin → nhận token JWT.  
+2. Token được lưu vào localStorage và gắn trong header mỗi request kế tiếp.  
+3. Chuyển hướng về `/` (Dashboard).  
+4. Giao diện Dashboard call API tới `/api/cameras` để lấy cấu hình camera.  
+5. Khi user nhấn "Bật cam" hoặc "Start Process", frontend sẽ:
+   - Gán `src` cho từng `<video>` hoặc `<img>`
+   - Gọi API `/api/process/:id` để backend bắt đầu nhận diện trên luồng video tương ứng.
+6. Backend trả kết quả qua WebSocket hoặc polling API `/api/results`.  
+7. Frontend hiển thị trực tiếp khung cam đã gán khung cảm xúc, đồng thời lưu kết quả vào gallery xem kết quả.
+8. (Nếu có thống kê): frontend định kỳ gọi `/api/statistics` hoặc lắng nghe WebSocket để cập nhật biểu đồ.
+
+---
+
+**Lưu ý mở rộng**:
+- Có thể thêm module **Thống kê** (statistics) dựa trên kết quả emotion.
+- **Notification** khi phát hiện cảm xúc đặc biệt (ví dụ: buồn/giận) thông qua email/webhook.
+- Cho phép **xuất dữ liệu** dưới dạng CSV/PDF phục vụ báo cáo.

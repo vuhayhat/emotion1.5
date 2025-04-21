@@ -423,4 +423,107 @@ code {
   .debug-data {
     grid-template-columns: 1fr;
   }
+}
+
+/* Styles for camera feed container */
+.camera-feed-container {
+  overflow: hidden;
+  border-radius: 0;
+  background-color: #f8f9fa;
+  transition: all 0.3s ease;
+}
+
+.camera-feed-container:hover {
+  transform: scale(1.01);
+}
+
+/* Camera card styles */
+.card {
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.card:hover {
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1) !important;
+}
+
+.card-header {
+  background-color: #f8f9fa;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* Status badge styles */
+.badge {
+  padding: 0.4em 0.6em;
+  font-weight: 500;
+}
+
+/* Make controls responsive */
+@media (max-width: 768px) {
+  .control-panel {
+    margin-top: 1rem;
+  }
+}
+
+/* Multicamera view specific styles */
+.multicam-view .camera-feed-container {
+  min-height: 200px;
+}
+
+/* Improve control panel appearance */
+.control-panel .form-control,
+.control-panel .form-select,
+.control-panel .btn {
+  margin-bottom: 0.5rem;
+}
+
+@media (max-width: 576px) {
+  .camera-controls {
+    flex-direction: column;
+    align-items: stretch !important;
+  }
+  
+  .camera-controls > * {
+    margin-bottom: 0.5rem;
+    width: 100%;
+  }
+}
+
+/* Improve status indicators */
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 5px;
+}
+
+.status-dot.connected {
+  background-color: #28a745;
+}
+
+.status-dot.disconnected {
+  background-color: #dc3545;
+}
+
+.status-dot.error {
+  background-color: #dc3545;
+  animation: pulse 1.5s infinite;
+}
+
+.status-dot.connecting {
+  background-color: #ffc107;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 1;
+  }
 } 

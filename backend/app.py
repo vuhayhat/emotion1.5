@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file, Response, send_from_directory
 from flask_cors import CORS
 import os
 import cv2
@@ -14,75 +14,171 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import datetime
 import json
-from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import Column, Integer, String, Float, DateTime, JSON as SQL_JSON, Boolean
-from sqlalchemy.orm import DeclarativeBase
 from dotenv import load_dotenv
 import random
 import math
 import flask
 import sqlalchemy
 import hashlib
-import jwt
+import jwt as pyjwt
 from datetime import timedelta, timezone
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import img_to_array
 import logging
-from camera_manager import camera_bp, Camera, db
+import threading
+import requests
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+from flask import Blueprint
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
+from werkzeug.security import generate_password_hash
 
-# Tải biến môi trường
+# Import db và các model từ models.py
+from models import db, User, Camera, CameraGroup, CameraGroupAssociation, Emotion
+
+# Import blueprint từ camera_handler thay vì camera_manager
+from camera_handlers import get_active_camera, start_camera, stop_camera, stop_all_cameras
+
+# Load biến môi trường từ file .env
 load_dotenv()
 
+# Cấu hình kết nối database
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASSWORD = os.getenv('DB_PASSWORD', '123456')
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '5432')
+DB_NAME = os.getenv('DB_NAME', 'emotion_detection1.3')
+
+# Thay đổi: Sử dụng SQLite thay vì PostgreSQL
+# DATABASE_URL = f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+DATABASE_URL = 'sqlite:///emotion_detection.db'
+
 app = Flask(__name__)
-# Cấu hình CORS đơn giản cho toàn bộ ứng dụng
-CORS(app, origins=["http://localhost:3000"], 
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"])
-
-# Đăng ký blueprint camera
-app.register_blueprint(camera_bp)
-
-# Cấu hình PostgreSQL
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'postgresql://postgres:123456@localhost/emotion_detection1.2')
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOAD_FOLDER'] = os.path.join(os.path.abspath(os.getcwd()), 'images')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key')
+app.config['UPLOAD_FOLDER'] = os.getenv('UPLOAD_FOLDER', 'images')
+app.config['DEBUG_FOLDER'] = os.getenv('DEBUG_FOLDER', 'debug_images')
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-jwt-secret-key')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 
-# Định nghĩa lớp cơ sở cho SQLAlchemy 2.0
-class Base(DeclarativeBase):
-    pass
+# Tạo thư mục lưu trữ nếu chưa tồn tại
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['DEBUG_FOLDER'], exist_ok=True)
+os.makedirs('static', exist_ok=True)
 
-# Khởi tạo SQLAlchemy
+# Cấu hình CORS
+CORS(app, resources={r"/*": {
+    "origins": os.getenv('CORS_ALLOWED_ORIGINS', '*').split(','),
+    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+}})
+
+# Khởi tạo database với ứng dụng Flask
 db.init_app(app)
 
-# Định nghĩa model Emotion
-class Emotion(db.Model):
-    __tablename__ = 'emotions'
+# Hàm tạo tài khoản admin mặc định nếu chưa tồn tại
+def create_default_admin():
+    with app.app_context():
+        # Kiểm tra xem đã có tài khoản admin chưa
+        admin_user = User.query.filter_by(username='admin').first()
+        if not admin_user:
+            # Tạo một tài khoản admin mặc định
+            admin_password = os.getenv('ADMIN_PASSWORD', 'admin123')
+            hashed_password = generate_password_hash(admin_password)
+            admin = User(
+                username='admin',
+                password_hash=hashed_password,
+                email='admin@example.com',
+                role='admin',
+                full_name='Administrator'
+            )
+            db.session.add(admin)
+            db.session.commit()
+            print("Tài khoản admin mặc định đã được tạo")
+        else:
+            print("Tài khoản admin đã tồn tại")
+
+# Tạo database và admin user khi khởi động ứng dụng
+with app.app_context():
+    db.create_all()
+    create_default_admin()
     
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    camera_id = Column(Integer, db.ForeignKey('cameras.id'), nullable=False)
-    image_path = Column(String(255), nullable=False)
-    result_path = Column(String(255), nullable=False)
-    dominant_emotion = Column(String(50))
-    emotion_scores = Column(SQL_JSON)
-    image_base64 = Column(String) # Lưu trữ hình ảnh gốc dưới dạng base64
-    processed_image_base64 = Column(String) # Lưu trữ hình ảnh đã xử lý dưới dạng base64
+# JWT configuration
+JWT_SECRET = os.getenv('JWT_SECRET', 'your-secret-key')
+JWT_ALGORITHM = 'HS256'
+JWT_EXPIRATION_DELTA = timedelta(days=1)
+
+# Khởi tạo JWT
+jwt_manager = JWTManager(app)
+
+def generate_token(user):
+    payload = {
+        'user_id': user.id,
+        'username': user.username,
+        'role': user.role,
+        'exp': datetime.datetime.now() + JWT_EXPIRATION_DELTA
+    }
+    return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def token_required(f):
+    def decorated(*args, **kwargs):
+        token = None
+        if 'Authorization' in request.headers:
+            token = request.headers['Authorization'].split(' ')[1]
+        
+        if not token:
+            return jsonify({'message': 'Token is missing'}), 401
+        
+        try:
+            payload = pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            current_user = User.query.get(payload['user_id'])
+            if not current_user or not current_user.is_active:
+                return jsonify({'message': 'Invalid token'}), 401
+        except pyjwt.ExpiredSignatureError:
+            return jsonify({'message': 'Token has expired'}), 401
+        except pyjwt.InvalidTokenError:
+            return jsonify({'message': 'Invalid token'}), 401
+        
+        return f(current_user, *args, **kwargs)
+    return decorated
+
+# Tạo blueprint cho user
+user_bp = Blueprint('user', __name__, url_prefix='/api/users')
+
+@user_bp.route('/', methods=['GET'], endpoint='get_all_users')
+@token_required
+def get_users(current_user):
+    if current_user.role != 'admin':
+        return jsonify({'message': 'Permission denied'}), 403
     
-    def __repr__(self):
-        return f'<Emotion {self.id} - {self.dominant_emotion}>'
+    users = User.query.all()
+    return jsonify([user.to_dict() for user in users])
+
+@user_bp.route('/<int:user_id>', methods=['GET'], endpoint='get_user_by_id')
+@token_required
+def get_user(current_user, user_id):
+    if current_user.role != 'admin' and current_user.id != user_id:
+        return jsonify({'message': 'Permission denied'}), 403
     
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'timestamp': self.timestamp.isoformat(),
-            'camera_id': self.camera_id,
-            'image_path': self.image_path,
-            'result_path': self.result_path,
-            'dominant_emotion': self.dominant_emotion,
-            'emotion_scores': self.emotion_scores,
-            'image_base64': self.image_base64,
-            'processed_image_base64': self.processed_image_base64
-        }
+    user = User.query.get_or_404(user_id)
+    return jsonify(user.to_dict())
+
+# Tạo blueprint cho emotion
+emotion_bp = Blueprint('emotion', __name__, url_prefix='/api/emotions')
+
+@emotion_bp.route('/', methods=['GET'], endpoint='get_all_emotions')
+@token_required
+def get_emotions(current_user):
+    # Lấy danh sách cảm xúc từ database
+    emotions = Emotion.query.all()
+    return jsonify([emotion.to_dict() for emotion in emotions])
+
+# Đăng ký các blueprint
+app.register_blueprint(emotion_bp)
+app.register_blueprint(user_bp)
 
 # Tạo bảng trong database nếu chưa tồn tại
 with app.app_context():
@@ -270,7 +366,7 @@ def detect_emotion_endpoint():
         # Lưu kết quả vào thư mục
         image_path, result_path, processed_path = save_image_result(processed_image, camera_id, emotion_result)
         
-        # Lưu vào cơ sở dữ liệu PostgreSQL
+        # Lưu vào cơ sở dữ liệu
         db_success, db_id = save_to_database(camera_id, image_path, result_path, processed_path, emotion_result)
         
         # Trả về kết quả
@@ -303,41 +399,49 @@ def get_cameras():
 
 @app.route('/api/cameras', methods=['POST'])
 def create_camera():
-    """Tạo một camera mới"""
-    if not request.json or 'name' not in request.json:
-        return jsonify({'error': 'Missing name parameter'}), 400
-    
     try:
-        # Lấy thông tin camera từ request
-        name = request.json['name']
-        description = request.json.get('description', '')
-        location = request.json.get('location', '')
+        data = request.get_json()
         
-        # Tạo bản ghi camera mới
+        # Validate required fields
+        if not data.get('name'):
+            return jsonify({'success': False, 'message': 'Tên camera là bắt buộc'}), 400
+
+        # Create new camera
         camera = Camera(
-            name=name,
-            description=description,
-            location=location,
-            is_active=True,
-            created_at=datetime.datetime.now()
+            name=data['name'],
+            location=data.get('location'),
+            camera_type=data.get('camera_type', 'webcam'),
+            status=data.get('status', 'active'),
+            ip_address=data.get('ip_address'),
+            port=int(data['port']) if data.get('port') else None,
+            stream_url=data.get('stream_url'),
+            user_id=1,  # Temporary: set default user_id to 1
+            connection_status='disconnected'
         )
-        
-        # Lưu vào cơ sở dữ liệu
+
+        # Add to database
         db.session.add(camera)
         db.session.commit()
-        
-        # Tạo thư mục lưu trữ hình ảnh cho camera mới
-        os.makedirs(f"image{camera.id}", exist_ok=True)
-        
+
         return jsonify({
             'success': True,
-            'message': f'Camera {name} created successfully',
+            'message': f'Camera {camera.name} đã được thêm thành công',
             'camera': camera.to_dict()
         }), 201
-        
+
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': 'Lỗi định dạng dữ liệu: ' + str(e)
+        }), 400
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        print(f"Error creating camera: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': 'Không thể thêm camera. Vui lòng thử lại.'
+        }), 500
 
 @app.route('/api/cameras/<int:camera_id>', methods=['GET'])
 def get_camera(camera_id):
@@ -353,32 +457,53 @@ def get_camera(camera_id):
 
 @app.route('/api/cameras/<int:camera_id>', methods=['PUT'])
 def update_camera(camera_id):
-    """Cập nhật thông tin camera"""
     try:
         camera = Camera.query.get(camera_id)
         if not camera:
-            return jsonify({'error': f'Camera ID {camera_id} not found'}), 404
-        
-        # Cập nhật thông tin từ request
-        if 'name' in request.json:
-            camera.name = request.json['name']
-        if 'description' in request.json:
-            camera.description = request.json['description']
-        if 'location' in request.json:
-            camera.location = request.json['location']
-        if 'is_active' in request.json:
-            camera.is_active = request.json['is_active']
-        
+            return jsonify({
+                'success': False,
+                'message': f'Không tìm thấy camera với ID {camera_id}'
+            }), 404
+
+        data = request.get_json()
+
+        # Update fields
+        if 'name' in data:
+            camera.name = data['name']
+        if 'location' in data:
+            camera.location = data['location']
+        if 'camera_type' in data:
+            camera.camera_type = data['camera_type']
+        if 'status' in data:
+            camera.status = data['status']
+        if 'ip_address' in data:
+            camera.ip_address = data['ip_address']
+        if 'port' in data:
+            camera.port = int(data['port']) if data['port'] else None
+        if 'stream_url' in data:
+            camera.stream_url = data['stream_url']
+
         db.session.commit()
-        
+
         return jsonify({
             'success': True,
-            'message': f'Camera {camera_id} updated successfully',
+            'message': f'Camera {camera.name} đã được cập nhật',
             'camera': camera.to_dict()
         })
+
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': 'Lỗi định dạng dữ liệu: ' + str(e)
+        }), 400
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        print(f"Error updating camera: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': 'Không thể cập nhật camera. Vui lòng thử lại.'
+        }), 500
 
 @app.route('/api/cameras/<int:camera_id>', methods=['DELETE'])
 def delete_camera(camera_id):
@@ -982,62 +1107,6 @@ def detect_emotion(image_array):
         
         return result, result_image
 
-# JWT configuration
-JWT_SECRET = os.getenv('JWT_SECRET', 'your-secret-key')
-JWT_ALGORITHM = 'HS256'
-JWT_EXPIRATION_DELTA = timedelta(days=1)
-
-# Add User model
-class User(db.Model):
-    __tablename__ = 'users'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
-    full_name = db.Column(db.String(100))
-    email = db.Column(db.String(120))
-    role = db.Column(db.String(20), default='user')
-    is_active = db.Column(db.Boolean, default=True)
-    last_login = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
-
-    def set_password(self, password):
-        self.password_hash = hashlib.sha256(password.encode()).hexdigest()
-
-    def check_password(self, password):
-        return self.password_hash == hashlib.sha256(password.encode()).hexdigest()
-
-def generate_token(user):
-    payload = {
-        'user_id': user.id,
-        'username': user.username,
-        'role': user.role,
-        'exp': datetime.datetime.now() + JWT_EXPIRATION_DELTA
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-def token_required(f):
-    def decorated(*args, **kwargs):
-        token = None
-        if 'Authorization' in request.headers:
-            token = request.headers['Authorization'].split(' ')[1]
-        
-        if not token:
-            return jsonify({'message': 'Token is missing'}), 401
-        
-        try:
-            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            current_user = User.query.get(payload['user_id'])
-            if not current_user or not current_user.is_active:
-                return jsonify({'message': 'Invalid token'}), 401
-        except jwt.ExpiredSignatureError:
-            return jsonify({'message': 'Token has expired'}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({'message': 'Invalid token'}), 401
-        
-        return f(current_user, *args, **kwargs)
-    return decorated
-
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -1107,6 +1176,7 @@ def login():
         print(f"Successful login for user: {data['username']}")
         return jsonify({
             'success': True,
+            'access_token': token,
             'token': token,
             'user': {
                 'id': user.id,
@@ -1157,15 +1227,603 @@ def update_profile(current_user):
     db.session.commit()
     return jsonify({'message': 'Profile updated successfully'})
 
-if __name__ == '__main__':
+@app.route('/api/auth/verify', methods=['GET'])
+@token_required
+def verify_token(current_user):
+    """Verify token and return user information"""
+    print(f"Token verified successfully for user: {current_user.username}")
+    return jsonify({
+        'success': True,
+        'user': {
+            'id': current_user.id,
+            'username': current_user.username,
+            'full_name': current_user.full_name,
+            'email': current_user.email,
+            'role': current_user.role
+        }
+    })
+
+def capture_image_from_rtsp(camera_id):
+    """Lấy hình ảnh từ camera RTSP và nhận diện cảm xúc"""
     try:
-        print("Starting Flask application...")
-        print(f"Flask version: {flask.__version__}")
-        print(f"SQLAlchemy version: {sqlalchemy.__version__ if 'sqlalchemy' in globals() else 'Unknown'}")
-        print(f"Current working directory: {os.getcwd()}")
-        print(f"Database URI: {app.config['SQLALCHEMY_DATABASE_URI']}")
-        app.run(host='0.0.0.0', port=5000, debug=True)
+        # Lấy thông tin camera từ cơ sở dữ liệu
+        camera = Camera.query.get(camera_id)
+        if not camera:
+            print(f"Không tìm thấy camera ID {camera_id}")
+            return None, f"Không tìm thấy camera ID {camera_id}"
+
+        # Kiểm tra loại camera
+        if camera.camera_type not in ['droidcam', 'ipcam', 'rtsp']:
+            print(f"Camera ID {camera_id} không phải là loại hỗ trợ streaming (type: {camera.camera_type})")
+            return None, f"Loại camera không hỗ trợ (type: {camera.camera_type})"
+
+        # Lấy URL stream
+        stream_url = camera.stream_url
+        if not stream_url:
+            # Tạo URL nếu chưa có
+            if camera.camera_type == 'droidcam':
+                stream_url = f"http://{camera.ip_address}:{camera.port}/video"
+            elif camera.camera_type == 'ipcam':
+                stream_url = f"http://{camera.ip_address}:{camera.port}/video"
+            elif camera.camera_type == 'rtsp':
+                stream_url = f"rtsp://{camera.ip_address}:{camera.port}/h264_ulaw.sdp"
+            
+            # Cập nhật URL vào cơ sở dữ liệu
+            camera.stream_url = stream_url
+            db.session.commit()
+
+        print(f"Kết nối đến camera {camera.name} tại URL: {stream_url}")
+        
+        # Mở kết nối đến camera
+        cap = cv2.VideoCapture(stream_url)
+        if not cap.isOpened():
+            print(f"Không thể kết nối đến camera tại {stream_url}")
+            return None, f"Không thể kết nối đến camera tại {stream_url}"
+
+        # Đọc frame từ camera
+        ret, frame = cap.read()
+        cap.release()
+
+        if not ret or frame is None:
+            print("Không thể đọc hình ảnh từ camera")
+            return None, "Không thể đọc hình ảnh từ camera"
+
+        # Cập nhật trạng thái kết nối
+        camera.connection_status = 'connected'
+        camera.last_connected = datetime.datetime.now()
+        db.session.commit()
+
+        print(f"Đã chụp ảnh thành công từ {camera.name}")
+        return frame, None
+    
     except Exception as e:
-        print(f"Error starting application: {e}")
+        print(f"Lỗi khi lấy hình ảnh từ camera RTSP: {e}")
         import traceback
-        traceback.print_exc() 
+        traceback.print_exc()
+        return None, str(e)
+
+@app.route('/api/cameras/rtsp-capture', methods=['POST'])
+def rtsp_capture_endpoint():
+    """API endpoint để chụp ảnh từ camera RTSP và nhận diện cảm xúc"""
+    if 'camera_id' not in request.json:
+        return jsonify({'error': 'Missing camera_id parameter'}), 400
+    
+    camera_id = request.json['camera_id']
+    
+    try:
+        # Chụp ảnh từ camera RTSP
+        frame, error = capture_image_from_rtsp(camera_id)
+        
+        if error:
+            return jsonify({'error': error}), 400
+        
+        if frame is None:
+            return jsonify({'error': 'Không thể chụp ảnh từ camera'}), 400
+        
+        # Chuyển đổi frame thành định dạng có thể gửi qua API
+        success, buffer = cv2.imencode('.jpg', frame)
+        if not success:
+            return jsonify({'error': 'Không thể mã hóa hình ảnh'}), 500
+        
+        # Chuyển buffer thành base64
+        image_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        # Phát hiện cảm xúc
+        emotion_result, processed_image = detect_emotion(frame)
+        
+        if not emotion_result:
+            return jsonify({'error': 'Không tìm thấy khuôn mặt hoặc lỗi xử lý'}), 400
+        
+        # Lưu kết quả vào thư mục
+        image_path, result_path, processed_path = save_image_result(frame, camera_id, emotion_result)
+        
+        # Lưu vào cơ sở dữ liệu
+        db_success, db_id = save_to_database(camera_id, image_path, result_path, processed_path, emotion_result)
+        
+        # Trả về kết quả
+        return jsonify({
+            'success': True,
+            'emotion': emotion_result.get('emotion', {}),
+            'emotion_percent': emotion_result.get('emotion_percent', {}),
+            'dominant_emotion': emotion_result.get('dominant_emotion', 'unknown'),
+            'processed_image': emotion_result.get('processed_image', ''),
+            'database_save': db_success,
+            'db_id': db_id,
+            'timestamp': datetime.datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        print(f"Lỗi xử lý hình ảnh RTSP: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+# Khởi tạo scheduler cho việc chụp ảnh theo lịch
+scheduler = BackgroundScheduler(daemon=True)
+scheduler.start()
+rtsp_camera_jobs = {}  # Dictionary để lưu trữ các job đã lên lịch
+
+@app.route('/api/cameras/schedule', methods=['POST'])
+def schedule_camera_capture():
+    """Lên lịch chụp ảnh định kỳ từ camera RTSP"""
+    data = request.json
+    
+    if not data or 'camera_id' not in data:
+        return jsonify({'error': 'Missing camera_id parameter'}), 400
+    
+    camera_id = data['camera_id']
+    interval_minutes = data.get('interval_minutes', 15)  # Mặc định 15 phút
+    schedule_type = data.get('schedule_type', 'interval')  # interval hoặc cron
+    
+    # Kiểm tra camera có tồn tại không
+    camera = Camera.query.get(camera_id)
+    if not camera:
+        return jsonify({'error': f'Camera ID {camera_id} not found'}), 404
+    
+    # Kiểm tra loại camera có hỗ trợ không
+    if camera.camera_type not in ['droidcam', 'ipcam', 'rtsp']:
+        return jsonify({'error': f'Camera type {camera.camera_type} does not support scheduling'}), 400
+    
+    # Xóa job cũ nếu đã có
+    if str(camera_id) in rtsp_camera_jobs:
+        scheduler.remove_job(rtsp_camera_jobs[str(camera_id)])
+        del rtsp_camera_jobs[str(camera_id)]
+    
+    # Hàm xử lý chụp ảnh và nhận diện
+    def capture_and_process():
+        print(f"Đang chụp ảnh theo lịch từ camera {camera_id}")
+        frame, error = capture_image_from_rtsp(camera_id)
+        
+        if error or frame is None:
+            print(f"Lỗi khi chụp ảnh theo lịch từ camera {camera_id}: {error}")
+            return
+        
+        try:
+            # Phát hiện cảm xúc
+            emotion_result, processed_image = detect_emotion(frame)
+            
+            if not emotion_result:
+                print(f"Không tìm thấy khuôn mặt hoặc lỗi xử lý trong ảnh từ camera {camera_id}")
+                return
+            
+            # Lưu kết quả vào thư mục
+            image_path, result_path, processed_path = save_image_result(frame, camera_id, emotion_result)
+            
+            # Lưu vào cơ sở dữ liệu
+            db_success, db_id = save_to_database(camera_id, image_path, result_path, processed_path, emotion_result)
+            
+            print(f"Đã xử lý thành công ảnh từ camera {camera_id}, kết quả: {emotion_result.get('dominant_emotion')}")
+        
+        except Exception as e:
+            print(f"Lỗi khi xử lý ảnh từ camera {camera_id}: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Tạo job mới dựa vào loại lịch trình
+    if schedule_type == 'interval':
+        job = scheduler.add_job(
+            capture_and_process,
+            IntervalTrigger(minutes=interval_minutes),
+            id=f'camera_{camera_id}_interval'
+        )
+        job_info = {
+            'type': 'interval',
+            'interval_minutes': interval_minutes,
+            'next_run': job.next_run_time.isoformat()
+        }
+    
+    elif schedule_type == 'cron':
+        # Lấy thông tin cron từ request
+        hour = data.get('hour', '*/1')  # Mặc định mỗi giờ
+        minute = data.get('minute', '0')  # Mặc định vào đầu giờ
+        
+        job = scheduler.add_job(
+            capture_and_process,
+            CronTrigger(hour=hour, minute=minute),
+            id=f'camera_{camera_id}_cron'
+        )
+        job_info = {
+            'type': 'cron',
+            'hour': hour,
+            'minute': minute,
+            'next_run': job.next_run_time.isoformat()
+        }
+    
+    else:
+        return jsonify({'error': 'Invalid schedule_type. Must be "interval" or "cron"'}), 400
+    
+    # Lưu job id vào dictionary
+    rtsp_camera_jobs[str(camera_id)] = job.id
+    
+    return jsonify({
+        'success': True,
+        'message': f'Camera {camera_id} scheduled for {schedule_type} capture',
+        'camera_id': camera_id,
+        'schedule': job_info
+    })
+
+@app.route('/api/cameras/schedule/<int:camera_id>', methods=['DELETE'])
+def delete_camera_schedule(camera_id):
+    """Xóa lịch trình chụp ảnh của camera"""
+    # Kiểm tra camera có tồn tại không
+    camera = Camera.query.get(camera_id)
+    if not camera:
+        return jsonify({'error': f'Camera ID {camera_id} not found'}), 404
+    
+    # Kiểm tra xem có job nào cho camera này không
+    if str(camera_id) not in rtsp_camera_jobs:
+        return jsonify({'error': f'No schedule found for camera {camera_id}'}), 404
+    
+    # Xóa job
+    job_id = rtsp_camera_jobs[str(camera_id)]
+    try:
+        scheduler.remove_job(job_id)
+        del rtsp_camera_jobs[str(camera_id)]
+        
+        return jsonify({
+            'success': True,
+            'message': f'Schedule for camera {camera_id} deleted successfully'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Error deleting schedule: {str(e)}'}), 500
+
+@app.route('/api/cameras/schedule', methods=['GET'])
+def get_schedules():
+    """Lấy danh sách tất cả các lịch trình đã cài đặt"""
+    result = []
+    
+    for camera_id, job_id in rtsp_camera_jobs.items():
+        job = scheduler.get_job(job_id)
+        if job:
+            # Xác định loại lịch trình
+            if 'interval' in job_id:
+                job_type = 'interval'
+                interval_seconds = job.trigger.interval.total_seconds()
+                interval_minutes = int(interval_seconds / 60)
+                
+                job_info = {
+                    'camera_id': int(camera_id),
+                    'job_id': job_id,
+                    'type': job_type,
+                    'interval_minutes': interval_minutes,
+                    'next_run': job.next_run_time.isoformat() if job.next_run_time else None
+                }
+            
+            else:  # cron
+                job_type = 'cron'
+                job_info = {
+                    'camera_id': int(camera_id),
+                    'job_id': job_id,
+                    'type': job_type,
+                    'hour': job.trigger.fields[5],  # hour field
+                    'minute': job.trigger.fields[6],  # minute field
+                    'next_run': job.next_run_time.isoformat() if job.next_run_time else None
+                }
+            
+            # Thêm thông tin camera
+            camera = Camera.query.get(int(camera_id))
+            if camera:
+                job_info['camera_name'] = camera.name
+                job_info['camera_location'] = camera.location
+                job_info['camera_type'] = camera.camera_type
+            
+            result.append(job_info)
+    
+    return jsonify(result)
+
+@app.route('/api/cameras/schedule/<int:camera_id>', methods=['GET'])
+def get_camera_schedule(camera_id):
+    """Lấy thông tin lịch trình của camera cụ thể"""
+    # Kiểm tra camera có tồn tại không
+    camera = Camera.query.get(camera_id)
+    if not camera:
+        return jsonify({'error': f'Camera ID {camera_id} not found'}), 404
+    
+    # Kiểm tra xem có job nào cho camera này không
+    if str(camera_id) not in rtsp_camera_jobs:
+        return jsonify({'scheduled': False, 'message': f'No schedule found for camera {camera_id}'})
+    
+    # Lấy thông tin job
+    job_id = rtsp_camera_jobs[str(camera_id)]
+    job = scheduler.get_job(job_id)
+    
+    if not job:
+        # Có job ID nhưng không còn job trong scheduler
+        del rtsp_camera_jobs[str(camera_id)]
+        return jsonify({'scheduled': False, 'message': f'Schedule for camera {camera_id} not found in scheduler'})
+    
+    # Xác định loại lịch trình
+    if 'interval' in job_id:
+        job_type = 'interval'
+        interval_seconds = job.trigger.interval.total_seconds()
+        interval_minutes = int(interval_seconds / 60)
+        
+        return jsonify({
+            'scheduled': True,
+            'camera_id': camera_id,
+            'job_id': job_id,
+            'type': job_type,
+            'interval_minutes': interval_minutes,
+            'next_run': job.next_run_time.isoformat() if job.next_run_time else None,
+            'camera_name': camera.name,
+            'camera_location': camera.location,
+            'camera_type': camera.camera_type
+        })
+    
+    else:  # cron
+        job_type = 'cron'
+        return jsonify({
+            'scheduled': True,
+            'camera_id': camera_id,
+            'job_id': job_id,
+            'type': job_type,
+            'hour': job.trigger.fields[5],  # hour field
+            'minute': job.trigger.fields[6],  # minute field
+            'next_run': job.next_run_time.isoformat() if job.next_run_time else None,
+            'camera_name': camera.name,
+            'camera_location': camera.location,
+            'camera_type': camera.camera_type
+        })
+
+# Thêm route để phục vụ static files
+@app.route('/api/static/<path:filename>')
+def serve_static(filename):
+    """Phục vụ files tĩnh như ảnh placeholder"""
+    return send_from_directory('static', filename)
+
+# Khởi tạo dữ liệu mặc định nếu cần
+def init_default_data():
+    """Khởi tạo dữ liệu mặc định cho database"""
+    with app.app_context():
+        # Kiểm tra xem đã có user admin chưa
+        admin = User.query.filter_by(username='admin2').first()
+        if not admin:
+            # Tạo user admin
+            admin = User(
+                username='admin2',
+                password_hash=generate_password_hash('admin123'),
+                email='admin@example.com',
+                role='admin',
+                is_active=True,
+                full_name='Administrator'
+            )
+            db.session.add(admin)
+            db.session.commit()
+            
+            # Tạo camera mặc định
+            default_cameras = [
+                Camera(
+                    name='Default Webcam',
+                    location='Main Office',
+                    camera_type='webcam',
+                    status='active',
+                    user_id=admin.id
+                ),
+                Camera(
+                    name='DroidCam 1',
+                    location='Mobile Device',
+                    camera_type='droidcam',
+                    status='active',
+                    ip_address='192.168.1.100',
+                    port=4747,
+                    user_id=admin.id
+                ),
+                Camera(
+                    name='IP Camera 1',
+                    location='Security Room',
+                    camera_type='ipcam',
+                    status='active',
+                    stream_url='rtsp://admin:admin123@192.168.1.108:554',
+                    user_id=admin.id
+                )
+            ]
+            
+            for camera in default_cameras:
+                db.session.add(camera)
+            
+            db.session.commit()
+            print("Đã tạo dữ liệu mặc định thành công!")
+
+# Thiết lập database khi chạy app
+def setup_database():
+    """Thiết lập database và tạo dữ liệu mặc định"""
+    with app.app_context():
+        # Tạo bảng
+        db.create_all()
+        
+        # Khởi tạo dữ liệu mặc định
+        init_default_data()
+        
+        # Tạo thư mục cho hình ảnh
+        ensure_image_directories()
+        
+        print("Thiết lập database hoàn tất")
+
+# Thêm biến toàn cục để lưu trạng thái nhận diện
+face_detection_threads = {}
+
+def start_face_detection(camera_id, stream_url, capture_interval, enable_emotion):
+    """Hàm xử lý nhận diện khuôn mặt trong thread riêng"""
+    try:
+        # Mở stream video
+        cap = cv2.VideoCapture(stream_url)
+        if not cap.isOpened():
+            raise Exception("Không thể mở stream video")
+
+        # Tạo thư mục lưu ảnh nếu chưa tồn tại
+        save_dir = os.path.join('images', f'camera_{camera_id}')
+        os.makedirs(save_dir, exist_ok=True)
+
+        while face_detection_threads.get(camera_id, {}).get('running', False):
+            # Chụp frame
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            # Lưu ảnh với timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            image_path = os.path.join(save_dir, f'{timestamp}.jpg')
+            cv2.imwrite(image_path, frame)
+
+            # Nhận diện khuôn mặt và cảm xúc
+            faces = detect_faces(frame)
+            if faces and enable_emotion:
+                emotions = detect_emotions(frame, faces)
+                
+                # Lưu kết quả vào database
+                for face, emotion in zip(faces, emotions):
+                    save_detection_result(camera_id, image_path, face, emotion)
+
+            # Đợi theo khoảng thời gian đã cài đặt
+            time.sleep(capture_interval)
+
+    except Exception as e:
+        print(f"Lỗi trong quá trình nhận diện: {str(e)}")
+    finally:
+        if cap:
+            cap.release()
+        face_detection_threads[camera_id] = {'running': False}
+
+@app.route('/api/cameras/<int:camera_id>/detect-faces', methods=['POST'])
+@jwt_required()
+def start_face_detection_endpoint(camera_id):
+    try:
+        data = request.get_json()
+        stream_url = data.get('streamUrl')
+        capture_interval = data.get('captureInterval', 2)
+        enable_emotion = data.get('enableEmotionDetection', True)
+
+        # Kiểm tra camera có tồn tại không
+        camera = Camera.query.get(camera_id)
+        if not camera:
+            return jsonify({'success': False, 'message': 'Camera không tồn tại'}), 404
+
+        # Kiểm tra xem đã có thread đang chạy chưa
+        if camera_id in face_detection_threads and face_detection_threads[camera_id].get('running', False):
+            return jsonify({'success': False, 'message': 'Đã có quá trình nhận diện đang chạy'}), 400
+
+        # Bắt đầu thread nhận diện
+        face_detection_threads[camera_id] = {'running': True}
+        thread = threading.Thread(
+            target=start_face_detection,
+            args=(camera_id, stream_url, capture_interval, enable_emotion)
+        )
+        thread.daemon = True
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'message': 'Đã bắt đầu nhận diện khuôn mặt',
+            'camera_id': camera_id
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/cameras/<int:camera_id>/stop-detection', methods=['POST'])
+@jwt_required()
+def stop_face_detection_endpoint(camera_id):
+    try:
+        if camera_id in face_detection_threads:
+            face_detection_threads[camera_id]['running'] = False
+            return jsonify({
+                'success': True,
+                'message': 'Đã dừng nhận diện khuôn mặt'
+            })
+        return jsonify({
+            'success': False,
+            'message': 'Không tìm thấy quá trình nhận diện đang chạy'
+        }), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+def save_detection_result(camera_id, image_path, face, emotion):
+    """Lưu kết quả nhận diện vào database"""
+    try:
+        result = DetectionResult(
+            camera_id=camera_id,
+            image_path=image_path,
+            face_location=face['location'],
+            emotion=emotion['emotion'],
+            confidence=emotion['confidence'],
+            timestamp=datetime.now()
+        )
+        db.session.add(result)
+        db.session.commit()
+    except Exception as e:
+        print(f"Lỗi khi lưu kết quả: {str(e)}")
+        db.session.rollback()
+
+@app.route('/api/cameras/<int:camera_id>/test-connection', methods=['POST'])
+def test_camera_connection(camera_id):
+    try:
+        camera = Camera.query.get(camera_id)
+        if not camera:
+            return jsonify({
+                'success': False,
+                'message': f'Không tìm thấy camera với ID {camera_id}'
+            }), 404
+
+        # Test connection based on camera type
+        if camera.camera_type == 'webcam':
+            # For webcam, just return success
+            success = True
+            message = 'Webcam sẵn sàng sử dụng'
+        elif camera.camera_type == 'ipcam':
+            # Test IP camera connection
+            try:
+                url = f'http://{camera.ip_address}:{camera.port}/video'
+                response = requests.get(url, timeout=5)
+                success = response.status_code == 200
+                message = 'Kết nối thành công' if success else 'Không thể kết nối đến camera'
+            except requests.exceptions.RequestException:
+                success = False
+                message = 'Không thể kết nối đến camera'
+        else:
+            success = False
+            message = 'Loại camera không hỗ trợ kiểm tra kết nối'
+
+        # Update camera status
+        camera.connection_status = 'connected' if success else 'disconnected'
+        camera.last_connected = datetime.now() if success else None
+        db.session.commit()
+
+        return jsonify({
+            'success': success,
+            'message': message,
+            'camera': camera.to_dict()
+        })
+
+    except Exception as e:
+        print(f"Error testing camera connection: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': 'Lỗi kiểm tra kết nối camera'
+        }), 500
+
+if __name__ == '__main__':
+    # Thiết lập database
+    setup_database()
+    
+    # Chạy ứng dụng
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)), debug=True) 

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Row, Col, Card, Button, Form, Alert, ProgressBar, Spinner, Badge } from 'react-bootstrap';
+import { Row, Col, Card, Button, Form, Alert, ProgressBar, Spinner, Badge, Tabs, Tab, Image, Container } from 'react-bootstrap';
 import Webcam from 'react-webcam';
-import axios from 'axios';
+import apiService from '../services/api';
 
 // Định nghĩa các màu cho các cảm xúc
 const emotionColors = {
@@ -37,7 +37,6 @@ const CameraCapture = () => {
   const webcamRef = useRef(null);
   const [captureInterval, setCaptureInterval] = useState(2); // Giảm thời gian mặc định xuống 2 giây
   const [isRunning, setIsRunning] = useState(false);
-  const [cameraId, setCameraId] = useState(1);
   const [webcamDevices, setWebcamDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
   const [emotionResult, setEmotionResult] = useState(null);
@@ -50,14 +49,38 @@ const CameraCapture = () => {
   const [captureCount, setCaptureCount] = useState(0); // Đếm số ảnh đã chụp
   const [successCount, setSuccessCount] = useState(0); // Đếm số lần nhận diện thành công
   const [lastProcessingTime, setLastProcessingTime] = useState(0); // Thời gian xử lý cuối cùng
+  
+  // Quản lý đa camera
+  const [activeCameras, setActiveCameras] = useState({
+    webcam: true,
+    ipcam1: false,
+    ipcam2: false,
+    ipcam3: false
+  });
+  
+  // Chọn camera
+  const [selectedCameras, setSelectedCameras] = useState({
+    webcam: null, // Webcam mặc định
+    ipcam1: null, // IP camera 1
+    ipcam2: null, // IP camera 2
+    ipcam3: null  // IP camera 3
+  });
+  
+  // Kết quả cảm xúc cho từng camera
+  const [cameraResults, setCameraResults] = useState({
+    webcam: null,
+    ipcam1: null,
+    ipcam2: null,
+    ipcam3: null
+  });
 
+  // Trạng thái kết nối camera
+  const [cameraStatuses, setCameraStatuses] = useState({});
+  
   // Chất lượng webcam
   const [selectedResolution, setSelectedResolution] = useState(2); // Mặc định là cao 1280x720
   const [webcamWidth, setWebcamWidth] = useState(CAMERA_RESOLUTIONS[2].width);
   const [webcamHeight, setWebcamHeight] = useState(CAMERA_RESOLUTIONS[2].height);
-
-  // API endpoint
-  const API_URL = `${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/api`;
 
   // Lấy danh sách thiết bị camera
   useEffect(() => {
@@ -69,6 +92,7 @@ const CameraCapture = () => {
         
         if (videoDevices.length > 0) {
           setSelectedDevice(videoDevices[0].deviceId);
+          setSelectedCameras(prev => ({...prev, webcam: videoDevices[0].deviceId}));
         }
       } catch (err) {
         console.error('Không thể lấy danh sách thiết bị camera:', err);
@@ -84,124 +108,157 @@ const CameraCapture = () => {
     const fetchRegisteredCameras = async () => {
       try {
         setLoadingCameras(true);
-        const response = await axios.get(`${API_URL}/cameras`);
+        const response = await apiService.cameras.getAll();
+        setRegisteredCameras(response.data);
         
-        // Lọc ra các camera đang hoạt động
-        const activeCameras = (response.data.cameras || []).filter(cam => cam.is_active);
-        
-        setRegisteredCameras(activeCameras);
-        
-        // Nếu đã đăng ký camera và đang không chọn camera nào, mặc định chọn camera đầu tiên
-        if (activeCameras.length > 0 && !cameraId) {
-          setCameraId(activeCameras[0].id);
+        // Tự động thiết lập IP cameras nếu có
+        if (response.data.length > 0) {
+          const ipCameras = response.data.filter(cam => cam.type === 'ipcam');
+          
+          // Thiết lập các IP camera mặc định
+          const newSelectedCameras = {...selectedCameras};
+          ipCameras.forEach((cam, index) => {
+            if (index < 3) { // Chỉ hỗ trợ tối đa 3 IP camera
+              const key = `ipcam${index + 1}`;
+              newSelectedCameras[key] = cam.id;
+            }
+          });
+          
+          setSelectedCameras(newSelectedCameras);
         }
       } catch (err) {
-        console.error('Lỗi khi tải danh sách camera đã đăng ký:', err);
+        console.error('Lỗi khi lấy danh sách camera:', err);
+        setError('Không thể lấy danh sách camera đã đăng ký');
       } finally {
         setLoadingCameras(false);
       }
     };
-    
+
     fetchRegisteredCameras();
   }, []);
 
-  // Xử lý khi thay đổi độ phân giải
+  // Xử lý thay đổi độ phân giải
   const handleResolutionChange = (e) => {
     const resIndex = parseInt(e.target.value);
     setSelectedResolution(resIndex);
-    const resolution = CAMERA_RESOLUTIONS[resIndex];
-    setWebcamWidth(resolution.width);
-    setWebcamHeight(resolution.height);
-    
-    // Nếu đang chạy, chụp một hình ảnh mới ngay lập tức để cập nhật với độ phân giải mới
-    if (isRunning) {
-      setTimeout(captureImage, 500);
-    }
+    setWebcamWidth(CAMERA_RESOLUTIONS[resIndex].width);
+    setWebcamHeight(CAMERA_RESOLUTIONS[resIndex].height);
   };
 
-  // Xử lý chụp ảnh từ webcam
+  // Xử lý thay đổi thời gian chụp
+  const handleIntervalChange = (e) => {
+    setCaptureInterval(parseInt(e.target.value));
+  };
+
+  // Xử lý chụp ảnh từ các camera
   const captureImage = useCallback(async () => {
-    if (webcamRef.current) {
-      try {
-        setLoading(true);
-        setCaptureCount(prev => prev + 1);
-        
-        // Lấy hình ảnh từ webcam - bắt đầu đo hiệu suất
-        const startTime = performance.now();
+    try {
+      setLoading(true);
+      setCaptureCount(prev => prev + 1);
+      const startTime = performance.now();
+      
+      // Chụp từ webcam nếu đang kích hoạt
+      if (activeCameras.webcam && webcamRef.current) {
         const imageSrc = webcamRef.current.getScreenshot();
         
         if (!imageSrc) {
-          throw new Error('Không thể chụp ảnh từ camera');
+          console.error('Không thể chụp ảnh từ webcam');
+        } else {
+          // Gửi ảnh lên server để nhận diện
+          try {
+            const response = await apiService.emotions.detect({
+              image: imageSrc,
+              cameraId: 'webcam',
+              cameraName: 'Webcam'
+            });
+            
+            setCameraResults(prev => ({
+              ...prev,
+              webcam: response.data
+            }));
+            
+            setSuccessCount(prev => prev + 1);
+          } catch (err) {
+            console.error('Lỗi khi nhận diện cảm xúc từ webcam:', err);
+          }
         }
-
-        if (debugInfo) {
-          console.log(`Chụp ảnh với độ phân giải ${webcamWidth}x${webcamHeight}`);
-          
-          // Tính toán kích thước ảnh 
-          const base64Size = (imageSrc.length * 3) / 4 - 2;
-          console.log(`Kích thước ảnh: ${(base64Size / 1024).toFixed(2)} KB`);
-        }
-
-        // Gửi ảnh lên server và đo thời gian
-        const response = await axios.post(`${API_URL}/detect-emotion`, {
-          image: imageSrc,
-          cameraId: cameraId
-        });
-
-        const endTime = performance.now();
-        const processingTime = endTime - startTime;
-        setLastProcessingTime(processingTime);
-
-        if (debugInfo) {
-          console.log('Kết quả nhận diện:', response.data);
-          console.log(`Thời gian xử lý: ${processingTime.toFixed(2)}ms`);
-        }
-        
-        setEmotionResult(response.data);
-        setSuccessCount(prev => prev + 1);
-        setError('');
-      } catch (err) {
-        console.error('Lỗi khi xử lý ảnh:', err);
-        setError(err.response?.data?.error || err.message || 'Có lỗi xảy ra khi phân tích cảm xúc');
-      } finally {
-        setLoading(false);
       }
+      
+      // Xử lý các IP camera
+      const ipCamKeys = ['ipcam1', 'ipcam2', 'ipcam3'];
+      for (const key of ipCamKeys) {
+        if (activeCameras[key] && selectedCameras[key]) {
+          try {
+            const cameraId = selectedCameras[key];
+            const camera = registeredCameras.find(cam => cam.id === cameraId);
+            
+            if (!camera) continue;
+            
+            // Gửi yêu cầu chụp ảnh từ IP camera
+            const response = await apiService.cameras.captureFromRTSP({
+              url: camera.rtsp_url,
+              cameraId: camera.id,
+              cameraName: camera.name
+            });
+            
+            if (response.data.success) {
+              // Nhận diện cảm xúc từ ảnh đã chụp
+              const emotionResponse = await apiService.emotions.detect({
+                imageId: response.data.imageId,
+                cameraId: camera.id,
+                cameraName: camera.name
+              });
+              
+              setCameraResults(prev => ({
+                ...prev,
+                [key]: emotionResponse.data
+              }));
+              
+              setSuccessCount(prev => prev + 1);
+            }
+          } catch (err) {
+            console.error(`Lỗi khi xử lý camera ${key}:`, err);
+            setCameraResults(prev => ({
+              ...prev,
+              [key]: { error: err.message || 'Lỗi khi xử lý' }
+            }));
+          }
+        }
+      }
+      
+      const endTime = performance.now();
+      setLastProcessingTime(endTime - startTime);
+      
+    } catch (err) {
+      console.error('Lỗi khi chụp ảnh:', err);
+      setError('Lỗi khi chụp ảnh: ' + (err.message || 'Lỗi không xác định'));
+    } finally {
+      setLoading(false);
     }
-  }, [webcamRef, cameraId, API_URL, webcamWidth, webcamHeight, debugInfo]);
+  }, [activeCameras, selectedCameras, webcamRef, registeredCameras]);
 
-  // Bắt đầu/dừng nhận diện
+  // Khởi động/dừng việc chụp ảnh
   const toggleCapture = () => {
     if (isRunning) {
-      // Dừng chụp
+      // Dừng việc chụp liên tục
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
       setIsRunning(false);
     } else {
-      // Bắt đầu chụp
+      // Khởi động việc chụp liên tục
+      setIsRunning(true);
       captureImage(); // Chụp ngay lập tức
+      
+      // Thiết lập interval để chụp liên tục
       intervalRef.current = setInterval(() => {
         captureImage();
       }, captureInterval * 1000);
-      setIsRunning(true);
     }
   };
 
-  // Xử lý thay đổi khoảng thời gian
-  const handleIntervalChange = (e) => {
-    const value = parseInt(e.target.value);
-    if (value > 0) {
-      setCaptureInterval(value);
-      // Nếu đang chạy, khởi động lại với khoảng thời gian mới
-      if (isRunning && intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = setInterval(captureImage, value * 1000);
-      }
-    }
-  };
-
-  // Dọn dẹp khi component unmount
+  // Cleanup khi component unmount
   useEffect(() => {
     return () => {
       if (intervalRef.current) {
@@ -210,13 +267,31 @@ const CameraCapture = () => {
     };
   }, []);
 
+  // Toggle camera (bật/tắt)
+  const toggleCamera = (cameraKey) => {
+    setActiveCameras(prev => ({
+      ...prev,
+      [cameraKey]: !prev[cameraKey]
+    }));
+  };
+
+  // Thay đổi camera được chọn
+  const handleCameraChange = (cameraKey, cameraId) => {
+    setSelectedCameras(prev => ({
+      ...prev,
+      [cameraKey]: cameraId
+    }));
+  };
+
   // Lấy tên camera từ ID
-  const getCameraNameById = (id) => {
-    const camera = registeredCameras.find(cam => cam.id === id);
+  const getCameraNameById = (cameraId) => {
+    const camera = registeredCameras.find(cam => cam.id === cameraId);
     if (camera) {
       return camera.name;
     }
-    return `Camera ${id}`;
+    
+    if (cameraId === 'webcam') return 'Webcam';
+    return `Camera ${cameraId}`;
   };
 
   // Reset đếm
@@ -225,228 +300,315 @@ const CameraCapture = () => {
     setSuccessCount(0);
   };
 
-  return (
-    <div>
-      <Row className="mb-4">
-        <Col md={8}>
-          <Card className="camera-container shadow">
-            <Card.Body>
-              <div className="d-flex justify-content-between align-items-center mb-3">
-                <h4 className="mb-0">{getCameraNameById(cameraId)}</h4>
-                <div className="camera-status">
-                  {isRunning ? (
-                    <Badge bg="success" className="pulse-badge">Đang nhận diện</Badge>
-                  ) : (
-                    <Badge bg="secondary">Đã dừng</Badge>
+  // Xử lý mở trang quản lý camera
+  const handleManageCameras = () => {
+    window.location.href = '/quanlycam';
+  };
+
+  // Hiển thị kết quả cảm xúc
+  const renderEmotionResult = (result) => {
+    if (!result) return null;
+    if (result.error) return <Alert variant="danger">{result.error}</Alert>;
+    
+    const emotion = result.emotion || {};
+    const dominantEmotion = emotion.dominant_emotion || 'neutral';
+    
+    return (
+      <div className="emotion-result">
+        <h5>Kết quả:</h5>
+        <div className="emotion-bars">
+          {Object.entries(emotion.emotion || {}).map(([emo, score]) => (
+            <div key={emo} className="emotion-bar-container">
+              <div className="emotion-label">{emotionLabels[emo] || emo}</div>
+              <ProgressBar
+                now={score * 100}
+                variant={emo === dominantEmotion ? 'success' : 'primary'}
+                label={`${(score * 100).toFixed(1)}%`}
+                className="emotion-bar"
+              />
+            </div>
+          ))}
+        </div>
+        {result.image_url && (
+          <div className="mt-2 text-center">
+            <Image src={result.image_url} alt="Kết quả phân tích" thumbnail className="result-image" />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Render camera view
+  const renderCameraView = (cameraKey) => {
+    // Hiển thị webcam
+    if (cameraKey === 'webcam') {
+      return (
+        <div className="camera-container">
+          <Card className="shadow mb-4">
+            <Card.Header className="d-flex justify-content-between align-items-center">
+              <div>
+                <i className="bi bi-camera-video me-2"></i>
+                Webcam
+              </div>
+              <Button 
+                variant={activeCameras.webcam ? "danger" : "success"} 
+                size="sm"
+                onClick={() => toggleCamera('webcam')}
+              >
+                {activeCameras.webcam ? "Tắt Camera" : "Bật Camera"}
+              </Button>
+            </Card.Header>
+            <Card.Body className="p-0">
+              {activeCameras.webcam ? (
+                <div className="webcam-container">
+                  <Webcam
+                    audio={false}
+                    ref={webcamRef}
+                    screenshotFormat="image/jpeg"
+                    screenshotQuality={1}
+                    className="camera-view"
+                    width="100%"
+                    height={webcamHeight}
+                    videoConstraints={{
+                      deviceId: selectedDevice,
+                      width: { ideal: webcamWidth },
+                      height: { ideal: webcamHeight }
+                    }}
+                  />
+                  {loading && (
+                    <div className="webcam-overlay">
+                      <Spinner animation="border" variant="light" />
+                    </div>
                   )}
                 </div>
-              </div>
-              
-              <div className="webcam-container">
-                <Webcam
-                  audio={false}
-                  ref={webcamRef}
-                  screenshotFormat="image/jpeg"
-                  screenshotQuality={1}
-                  className="camera-view"
-                  width={webcamWidth}
-                  height={webcamHeight}
-                  videoConstraints={{
-                    deviceId: selectedDevice,
-                    width: { ideal: webcamWidth },
-                    height: { ideal: webcamHeight }
-                  }}
-                />
+              ) : (
+                <div className="camera-placeholder">
+                  <i className="bi bi-camera-video-off"></i>
+                  <p>Camera tắt</p>
+                </div>
+              )}
+            </Card.Body>
+            <Card.Footer>
+              {renderEmotionResult(cameraResults.webcam)}
+            </Card.Footer>
+          </Card>
+        </div>
+      );
+    }
+    
+    // Hiển thị IP camera
+    const cameraId = selectedCameras[cameraKey];
+    const camera = registeredCameras.find(cam => cam.id === cameraId);
+    const cameraName = camera ? camera.name : `IP Camera ${cameraKey.slice(-1)}`;
+    
+    return (
+      <div className="camera-container">
+        <Card className="shadow mb-4">
+          <Card.Header className="d-flex justify-content-between align-items-center">
+            <div>
+              <i className="bi bi-camera me-2"></i>
+              {cameraName}
+            </div>
+            <Button 
+              variant={activeCameras[cameraKey] ? "danger" : "success"} 
+              size="sm"
+              onClick={() => toggleCamera(cameraKey)}
+              disabled={!cameraId}
+            >
+              {activeCameras[cameraKey] ? "Tắt Camera" : "Bật Camera"}
+            </Button>
+          </Card.Header>
+          <Card.Body className="p-0">
+            {cameraId && activeCameras[cameraKey] ? (
+              <div className="ipcam-container">
+                {cameraResults[cameraKey]?.image_url ? (
+                  <img 
+                    src={cameraResults[cameraKey].image_url} 
+                    alt={cameraName} 
+                    className="camera-view" 
+                  />
+                ) : (
+                  <div className="camera-placeholder">
+                    <i className="bi bi-camera"></i>
+                    <p>Đang chờ hình ảnh...</p>
+                  </div>
+                )}
                 {loading && (
                   <div className="webcam-overlay">
                     <Spinner animation="border" variant="light" />
                   </div>
                 )}
               </div>
-            </Card.Body>
-          </Card>
-        </Col>
-        
-        <Col md={4}>
-          <Card className="control-panel shadow">
+            ) : (
+              <div className="camera-placeholder">
+                {!cameraId ? (
+                  <>
+                    <i className="bi bi-exclamation-triangle"></i>
+                    <p>Chưa chọn camera</p>
+                  </>
+                ) : (
+                  <>
+                    <i className="bi bi-camera-video-off"></i>
+                    <p>Camera tắt</p>
+                  </>
+                )}
+              </div>
+            )}
+          </Card.Body>
+          <Card.Footer>
+            <Form.Group className="mb-3">
+              <Form.Select 
+                value={cameraId || ''} 
+                onChange={(e) => handleCameraChange(cameraKey, e.target.value)}
+                disabled={isRunning}
+              >
+                <option value="">Chọn camera</option>
+                {registeredCameras.filter(cam => cam.type === 'ipcam').map(camera => (
+                  <option key={camera.id} value={camera.id}>
+                    {camera.name} - {camera.rtsp_url}
+                  </option>
+                ))}
+              </Form.Select>
+            </Form.Group>
+            {renderEmotionResult(cameraResults[cameraKey])}
+          </Card.Footer>
+        </Card>
+      </div>
+    );
+  };
+
+  return (
+    <Container fluid>
+      <Row className="mb-4">
+        <Col>
+          <Card className="shadow">
             <Card.Header className="bg-primary text-white">
-              <h5 className="mb-0">Bảng điều khiển</h5>
+              <h5 className="mb-0">Nhận Diện Cảm Xúc</h5>
             </Card.Header>
             <Card.Body>
-              {error && (
-                <Alert variant="danger" dismissible onClose={() => setError('')}>
-                  {error}
-                </Alert>
-              )}
-              
-              <Form.Group className="mb-3">
-                <Form.Label>Camera</Form.Label>
-                <Form.Select 
-                  value={cameraId}
-                  onChange={(e) => setCameraId(parseInt(e.target.value))}
-                  disabled={isRunning || loadingCameras}
-                >
-                  {loadingCameras ? (
-                    <option>Đang tải camera...</option>
-                  ) : (
-                    registeredCameras.length > 0 ? (
-                      registeredCameras.map(camera => (
-                        <option key={camera.id} value={camera.id}>
-                          {camera.name}
-                        </option>
-                      ))
-                    ) : (
-                      <option value={1}>Camera 1</option>
-                    )
-                  )}
-                </Form.Select>
-              </Form.Group>
-              
-              <Form.Group className="mb-3">
-                <Form.Label>Thiết bị</Form.Label>
-                <Form.Select
-                  value={selectedDevice}
-                  onChange={(e) => setSelectedDevice(e.target.value)}
-                  disabled={isRunning}
-                >
-                  {webcamDevices.map((device, index) => (
-                    <option key={device.deviceId} value={device.deviceId}>
-                      {device.label || `Camera ${index + 1}`}
-                    </option>
-                  ))}
-                </Form.Select>
-              </Form.Group>
-              
-              <Form.Group className="mb-3">
-                <Form.Label>Độ phân giải</Form.Label>
-                <Form.Select
-                  value={selectedResolution}
-                  onChange={handleResolutionChange}
-                >
-                  {CAMERA_RESOLUTIONS.map((res, index) => (
-                    <option key={index} value={index}>
-                      {res.label}
-                    </option>
-                  ))}
-                </Form.Select>
-              </Form.Group>
-              
-              <Form.Group className="mb-3">
-                <Form.Label>
-                  Thời gian chụp (giây): {captureInterval}
-                </Form.Label>
-                <Form.Range
-                  min={1}
-                  max={10}
-                  step={1}
-                  value={captureInterval}
-                  onChange={handleIntervalChange}
-                />
-              </Form.Group>
-              
-              <div className="d-grid">
-                <Button
-                  variant={isRunning ? "danger" : "success"}
-                  className="mb-3"
-                  onClick={toggleCapture}
-                  disabled={loading}
-                >
-                  {isRunning ? "Dừng nhận diện" : "Bắt đầu nhận diện"}
-                </Button>
-              </div>
-              
-              <Form.Check 
-                type="switch"
-                id="debug-switch"
-                label="Hiển thị thông tin debug"
-                checked={debugInfo}
-                onChange={() => setDebugInfo(!debugInfo)}
-                className="mb-3"
-              />
-              
-              {debugInfo && (
-                <div className="debug-info p-2 bg-light rounded mb-3">
-                  <small>
-                    <div><strong>Độ phân giải:</strong> {webcamWidth}x{webcamHeight}</div>
-                    <div><strong>Số ảnh đã chụp:</strong> {captureCount}</div>
-                    <div><strong>Nhận diện thành công:</strong> {successCount}</div>
-                    <div><strong>Tỉ lệ thành công:</strong> {captureCount > 0 ? ((successCount / captureCount) * 100).toFixed(1) : 0}%</div>
-                    <div><strong>Thời gian xử lý:</strong> {lastProcessingTime.toFixed(0)}ms</div>
-                    <div className="mt-1">
-                      <Button size="sm" variant="outline-secondary" onClick={resetCounters}>Reset</Button>
+              <div className="controls mb-3">
+                <Row>
+                  <Col md={6}>
+                    <Form.Group className="mb-3">
+                      <Form.Label>Thời gian chụp (giây): {captureInterval}</Form.Label>
+                      <Form.Range
+                        min={1}
+                        max={10}
+                        step={1}
+                        value={captureInterval}
+                        onChange={handleIntervalChange}
+                        disabled={isRunning}
+                      />
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group className="mb-3">
+                      <Form.Label>Độ phân giải</Form.Label>
+                      <Form.Select
+                        value={selectedResolution}
+                        onChange={handleResolutionChange}
+                        disabled={isRunning}
+                      >
+                        {CAMERA_RESOLUTIONS.map((res, index) => (
+                          <option key={index} value={index}>
+                            {res.label}
+                          </option>
+                        ))}
+                      </Form.Select>
+                    </Form.Group>
+                  </Col>
+                  <Col md={3} className="d-flex align-items-end">
+                    <div className="d-grid w-100">
+                      <Button 
+                        variant={isRunning ? "danger" : "success"} 
+                        onClick={toggleCapture}
+                        className="mb-3"
+                      >
+                        {isRunning ? (
+                          <>
+                            <i className="bi bi-stop-circle me-2"></i>
+                            Dừng Chụp
+                          </>
+                        ) : (
+                          <>
+                            <i className="bi bi-play-circle me-2"></i>
+                            Bắt Đầu Chụp
+                          </>
+                        )}
+                      </Button>
                     </div>
-                  </small>
-                </div>
-              )}
+                  </Col>
+                </Row>
+                <Row>
+                  <Col>
+                    <Button 
+                      variant="outline-primary" 
+                      onClick={handleManageCameras}
+                      className="me-2"
+                    >
+                      <i className="bi bi-camera me-2"></i>
+                      Quản Lý Camera
+                    </Button>
+                    <Button 
+                      variant="outline-secondary" 
+                      onClick={resetCounters}
+                      className="me-2"
+                    >
+                      <i className="bi bi-arrow-counterclockwise me-2"></i>
+                      Reset Đếm
+                    </Button>
+                    <Button 
+                      variant="outline-info" 
+                      onClick={() => setDebugInfo(!debugInfo)}
+                    >
+                      <i className="bi bi-bug me-2"></i>
+                      {debugInfo ? 'Ẩn Debug' : 'Hiện Debug'}
+                    </Button>
+                  </Col>
+                </Row>
+                {debugInfo && (
+                  <Row className="mt-3">
+                    <Col>
+                      <Alert variant="info">
+                        <div>Số ảnh đã chụp: {captureCount}</div>
+                        <div>Số lần nhận diện thành công: {successCount}</div>
+                        <div>Thời gian xử lý cuối: {lastProcessingTime.toFixed(0)} ms</div>
+                      </Alert>
+                    </Col>
+                  </Row>
+                )}
+                {error && (
+                  <Row className="mt-3">
+                    <Col>
+                      <Alert variant="danger" onClose={() => setError('')} dismissible>
+                        {error}
+                      </Alert>
+                    </Col>
+                  </Row>
+                )}
+              </div>
             </Card.Body>
           </Card>
         </Col>
       </Row>
 
-      {emotionResult && (
-        <Row>
-          <Col md={12}>
-            <Card className="result-container shadow">
-              <Card.Header className="bg-dark text-white">
-                <h5 className="mb-0">Kết quả nhận diện cảm xúc</h5>
-              </Card.Header>
-              <Card.Body>
-                <Row>
-                  <Col md={6}>
-                    {emotionResult.processed_image && (
-                      <div className="text-center">
-                        <h6>Hình ảnh đã xử lý</h6>
-                        <div className="processed-image-container">
-                          <img 
-                            src={`data:image/jpeg;base64,${emotionResult.processed_image}`}
-                            alt="Processed" 
-                            className="img-fluid processed-image"
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </Col>
-                  <Col md={6}>
-                    <h6>Phân tích cảm xúc</h6>
-                    <div className="emotion-summary p-2 mb-3 rounded" style={{
-                      backgroundColor: emotionColors[emotionResult.dominant_emotion] + '22',
-                      borderLeft: `4px solid ${emotionColors[emotionResult.dominant_emotion]}`
-                    }}>
-                      <div className="fs-5 fw-bold">
-                        Cảm xúc chính: {emotionLabels[emotionResult.dominant_emotion] || emotionResult.dominant_emotion}
-                      </div>
-                      <div>
-                        {new Date(emotionResult.timestamp).toLocaleString('vi-VN')}
-                      </div>
-                    </div>
-                    
-                    <div className="emotion-bars">
-                      {Object.entries(emotionResult.emotion_percent || {}).sort((a, b) => b[1] - a[1]).map(([emotion, percent]) => (
-                        <div key={emotion} className="mb-2">
-                          <div className="d-flex justify-content-between align-items-center mb-1">
-                            <div>{emotionLabels[emotion] || emotion}</div>
-                            <div><strong>{percent}%</strong></div>
-                          </div>
-                          <ProgressBar 
-                            now={percent} 
-                            variant={emotion === 'angry' ? 'danger' : 
-                                    emotion === 'happy' ? 'success' : 
-                                    emotion === 'sad' ? 'info' : 
-                                    emotion === 'surprise' ? 'warning' : 
-                                    emotion === 'fear' ? 'primary' : 
-                                    emotion === 'disgust' ? 'dark' : 'secondary'}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </Col>
-                </Row>
-              </Card.Body>
-            </Card>
-          </Col>
-        </Row>
-      )}
-    </div>
+      <Row>
+        <Col md={6}>
+          {renderCameraView('webcam')}
+        </Col>
+        <Col md={6}>
+          {renderCameraView('ipcam1')}
+        </Col>
+      </Row>
+      <Row>
+        <Col md={6}>
+          {renderCameraView('ipcam2')}
+        </Col>
+        <Col md={6}>
+          {renderCameraView('ipcam3')}
+        </Col>
+      </Row>
+    </Container>
   );
 };
 
