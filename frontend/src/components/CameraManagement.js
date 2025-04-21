@@ -19,6 +19,7 @@ const CameraManagement = () => {
   const [connectedCameras, setConnectedCameras] = useState({});
   const [showNoCameraMessage, setShowNoCameraMessage] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [cameraStates, setCameraStates] = useState({});
 
   const [formData, setFormData] = useState({
     name: '',
@@ -33,6 +34,7 @@ const CameraManagement = () => {
   useEffect(() => {
     fetchCameras();
     loadSchedules();
+    fetchCameraStates();
   }, []);
 
   useEffect(() => {
@@ -706,6 +708,95 @@ const CameraManagement = () => {
     }
   };
 
+  // Hàm để lấy trạng thái của tất cả camera
+  const fetchCameraStates = async () => {
+    try {
+      const cameras = await apiService.cameras.getAll();
+      const states = {};
+      
+      for (const camera of cameras.data) {
+        try {
+          const statusResponse = await apiService.cameras.getStatus(camera.id);
+          states[camera.id] = statusResponse.data.is_active;
+        } catch (error) {
+          console.error(`Error getting status for camera ${camera.id}:`, error);
+          states[camera.id] = false;
+        }
+      }
+      
+      setCameraStates(states);
+    } catch (error) {
+      console.error('Error fetching camera states:', error);
+    }
+  };
+
+  // Hàm xử lý bật camera
+  const handleStartCamera = async (cameraId) => {
+    try {
+      setLoading(true);
+      await apiService.cameras.startCamera(cameraId);
+      setCameraStates(prev => ({
+        ...prev,
+        [cameraId]: true
+      }));
+      setSuccess('Camera đã được bật thành công');
+    } catch (error) {
+      setError('Không thể bật camera. ' + (error.response?.data?.message || ''));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Hàm xử lý tắt camera
+  const handleStopCamera = async (cameraId) => {
+    try {
+      setLoading(true);
+      await apiService.cameras.stopCamera(cameraId);
+      setCameraStates(prev => ({
+        ...prev,
+        [cameraId]: false
+      }));
+      setSuccess('Camera đã được tắt thành công');
+    } catch (error) {
+      setError('Không thể tắt camera. ' + (error.response?.data?.message || ''));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Hàm render nút điều khiển camera
+  const renderCameraControls = (camera) => {
+    const isActive = cameraStates[camera.id];
+    
+    return (
+      <>
+        <Button
+          variant={isActive ? "danger" : "success"}
+          size="sm"
+          className="me-1"
+          onClick={() => isActive ? handleStopCamera(camera.id) : handleStartCamera(camera.id)}
+          disabled={loading}
+        >
+          {loading ? (
+            <>
+              <Spinner
+                as="span"
+                animation="border"
+                size="sm"
+                role="status"
+                aria-hidden="true"
+                className="me-1"
+              />
+              Đang xử lý...
+            </>
+          ) : (
+            isActive ? 'Tắt Camera' : 'Bật Camera'
+          )}
+        </Button>
+      </>
+    );
+  };
+
   return (
     <Container fluid className="py-3">
       <Row className="mb-3">
@@ -772,8 +863,8 @@ const CameraManagement = () => {
                   <td>{camera.location || '-'}</td>
                   <td>{camera.camera_type}</td>
                   <td>
-                    <Badge bg={camera.status === 'active' ? 'success' : 'danger'}>
-                      {camera.status === 'active' ? 'Hoạt động' : 'Không hoạt động'}
+                    <Badge bg={cameraStates[camera.id] ? 'success' : 'danger'}>
+                      {cameraStates[camera.id] ? 'Đang hoạt động' : 'Đã tắt'}
                     </Badge>
                   </td>
                   <td>{renderConnectionBadge(camera)}</td>
@@ -808,6 +899,7 @@ const CameraManagement = () => {
                     )}
                   </td>
                   <td>
+                    {renderCameraControls(camera)}
                     <Button
                       variant="info"
                       size="sm"
@@ -816,9 +908,7 @@ const CameraManagement = () => {
                     >
                       Sửa
                     </Button>
-                    
                     {renderConnectionButton(camera)}
-                    
                     {camera.camera_type === 'rtsp' && (
                       <Button
                         variant="primary"
@@ -843,16 +933,6 @@ const CameraManagement = () => {
                         )}
                       </Button>
                     )}
-                    
-                    <Button
-                      variant={camera.status === 'active' ? 'warning' : 'success'}
-                      size="sm"
-                      className="me-1"
-                      onClick={() => handleToggleActive(camera)}
-                    >
-                      {camera.status === 'active' ? 'Tắt' : 'Bật'}
-                    </Button>
-                    
                     <Button
                       variant="danger"
                       size="sm"

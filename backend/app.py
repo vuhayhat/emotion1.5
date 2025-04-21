@@ -1821,6 +1821,94 @@ def test_camera_connection(camera_id):
             'message': 'Lỗi kiểm tra kết nối camera'
         }), 500
 
+# Endpoint để bật camera
+@app.route('/api/cameras/<int:camera_id>/start', methods=['POST'])
+def start_camera_endpoint(camera_id):
+    try:
+        camera = Camera.query.get_or_404(camera_id)
+        
+        # Kiểm tra loại camera và xử lý tương ứng
+        if camera.camera_type == 'webcam':
+            # Xử lý cho webcam
+            camera.connection_status = 'connected'
+            camera.last_connected = datetime.datetime.now()
+        elif camera.camera_type in ['ipcam', 'droidcam']:
+            # Kiểm tra kết nối với IP camera
+            try:
+                url = f'http://{camera.ip_address}:{camera.port}/video'
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    camera.connection_status = 'connected'
+                    camera.last_connected = datetime.datetime.now()
+                else:
+                    return jsonify({
+                        'success': False,
+                        'message': 'Không thể kết nối đến camera'
+                    }), 400
+            except requests.exceptions.RequestException:
+                return jsonify({
+                    'success': False,
+                    'message': 'Không thể kết nối đến camera'
+                }), 400
+        
+        camera.status = 'active'
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Camera đã được bật thành công',
+            'camera': camera.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': f'Lỗi khi bật camera: {str(e)}'
+        }), 500
+
+# Endpoint để tắt camera
+@app.route('/api/cameras/<int:camera_id>/stop', methods=['POST'])
+def stop_camera_endpoint(camera_id):
+    try:
+        camera = Camera.query.get_or_404(camera_id)
+        
+        camera.status = 'inactive'
+        camera.connection_status = 'disconnected'
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Camera đã được tắt thành công',
+            'camera': camera.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': f'Lỗi khi tắt camera: {str(e)}'
+        }), 500
+
+# Endpoint để lấy trạng thái camera
+@app.route('/api/cameras/<int:camera_id>/status', methods=['GET'])
+def get_camera_status(camera_id):
+    try:
+        camera = Camera.query.get_or_404(camera_id)
+        
+        return jsonify({
+            'success': True,
+            'is_active': camera.status == 'active',
+            'connection_status': camera.connection_status,
+            'last_connected': camera.last_connected.isoformat() if camera.last_connected else None
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'Lỗi khi lấy trạng thái camera: {str(e)}'
+        }), 500
+
 if __name__ == '__main__':
     # Thiết lập database
     setup_database()
