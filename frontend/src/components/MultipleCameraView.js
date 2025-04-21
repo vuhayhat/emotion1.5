@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Container, Row, Col, Card, Button, Spinner, Alert, Badge, Form, Image } from 'react-bootstrap';
 import apiService from '../services/api';
 import CameraSettings from './CameraSettings';
+import CameraPlaceholder from './CameraPlaceholder';
 import './MultipleCameraView.css';  // Thêm import CSS
 
 const MultipleCameraView = () => {
@@ -19,6 +20,8 @@ const MultipleCameraView = () => {
   const [selectedCamera, setSelectedCamera] = useState(null);
   const [cameraSettings, setCameraSettings] = useState({});
   const [isDetecting, setIsDetecting] = useState({});
+  const [activeStates, setActiveStates] = useState({});
+  const [loadingStates, setLoadingStates] = useState({});
 
   // Format timestamp to readable format
   const formatDateTime = (timestamp) => {
@@ -50,10 +53,24 @@ const MultipleCameraView = () => {
     try {
       setLoading(true);
       const response = await apiService.cameras.getAll();
-      setCameras(response.data.cameras || []);
-    } catch (err) {
-      console.error('Error fetching cameras:', err);
+      if (response.data) {
+        setCameras(response.data.cameras || []);
+        // Lấy trạng thái của tất cả camera
+        const states = {};
+        for (const camera of response.data.cameras) {
+          try {
+            const statusResponse = await apiService.cameras.getStatus(camera.id);
+            states[camera.id] = statusResponse.data.is_active;
+          } catch (error) {
+            console.error(`Error getting status for camera ${camera.id}:`, error);
+            states[camera.id] = false;
+          }
+        }
+        setActiveStates(states);
+      }
+    } catch (error) {
       setError('Không thể tải danh sách camera');
+      console.error('Error fetching cameras:', error);
     } finally {
       setLoading(false);
     }
@@ -85,47 +102,27 @@ const MultipleCameraView = () => {
 
   // Start processing a camera
   const startProcessing = async (cameraId) => {
+    setLoadingStates(prev => ({ ...prev, [cameraId]: true }));
     try {
-      setActiveCameras(prev => ({
-        ...prev,
-        [cameraId]: { ...prev[cameraId], loading: true }
-      }));
-      
-      await apiService.cameras.startProcess(cameraId);
-      
-      setActiveCameras(prev => ({
-        ...prev,
-        [cameraId]: { active: true, loading: false }
-      }));
-    } catch (err) {
-      console.error(`Error starting camera ${cameraId}:`, err);
-      setActiveCameras(prev => ({
-        ...prev,
-        [cameraId]: { active: false, loading: false, error: 'Không thể bắt đầu xử lý' }
-      }));
+      await apiService.cameras.startCamera(cameraId);
+      setActiveStates(prev => ({ ...prev, [cameraId]: true }));
+    } catch (error) {
+      setError('Không thể bật camera: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setLoadingStates(prev => ({ ...prev, [cameraId]: false }));
     }
   };
 
   // Stop processing a camera
   const stopProcessing = async (cameraId) => {
+    setLoadingStates(prev => ({ ...prev, [cameraId]: true }));
     try {
-      setActiveCameras(prev => ({
-        ...prev,
-        [cameraId]: { ...prev[cameraId], loading: true }
-      }));
-      
-      await apiService.cameras.stopProcess(cameraId);
-      
-      setActiveCameras(prev => ({
-        ...prev,
-        [cameraId]: { active: false, loading: false }
-      }));
-    } catch (err) {
-      console.error(`Error stopping camera ${cameraId}:`, err);
-      setActiveCameras(prev => ({
-        ...prev,
-        [cameraId]: { ...prev[cameraId], loading: false, error: 'Không thể dừng xử lý' }
-      }));
+      await apiService.cameras.stopCamera(cameraId);
+      setActiveStates(prev => ({ ...prev, [cameraId]: false }));
+    } catch (error) {
+      setError('Không thể tắt camera: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setLoadingStates(prev => ({ ...prev, [cameraId]: false }));
     }
   };
 
@@ -432,123 +429,13 @@ const MultipleCameraView = () => {
 
     return (
       <Col key={cameraId} xs={12} md={getColClass()} className="camera-column">
-        <Card className="camera-card h-100">
-          <Card.Header className="camera-header">
-            <div className="camera-title">
-              <h5 className="mb-0">{camera.name}</h5>
-              <small className="text-muted">{camera.camera_type}</small>
-            </div>
-            <div className="camera-controls">
-              {renderConnectionStatus(camera.connection_status)}
-              <Button 
-                variant={isActive ? "danger" : "success"}
-                size="sm"
-                onClick={() => toggleCamera(camera)}
-                disabled={isLoading}
-                className="ms-2"
-              >
-                {isLoading ? (
-                  <Spinner animation="border" size="sm" />
-                ) : isActive ? "Tắt" : "Bật"}
-              </Button>
-              <Button
-                variant="outline-secondary"
-                size="sm"
-                onClick={() => handleSettingsClick(camera)}
-                className="settings-button ms-2"
-                title="Cài đặt camera"
-              >
-                <i className="bi bi-gear-fill"></i>
-              </Button>
-            </div>
-          </Card.Header>
-          
-          <Card.Body className="camera-body p-0">
-            {error && (
-              <Alert variant="danger" className="m-2">
-                {error}
-              </Alert>
-            )}
-            
-            <div className="camera-container">
-              {camera.camera_type === 'webcam' ? (
-                <video
-                  ref={el => videoRefs.current[cameraId] = el}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="camera-stream"
-                />
-              ) : camera.camera_type === 'ipcam' && isActive && streamUrl ? (
-                <img
-                  src={streamUrl}
-                  alt={`Camera ${camera.name}`}
-                  className="camera-stream"
-                  onError={() => {
-                    setActiveCameras(prev => ({
-                      ...prev,
-                      [cameraId]: { 
-                        ...prev[cameraId], 
-                        error: 'Không thể hiển thị hình ảnh IP camera'
-                      }
-                    }));
-                  }}
-                />
-              ) : (
-                <img
-                  src={`http://localhost:5000/api/streams/${cameraId}?t=${Date.now()}`}
-                  alt={`Camera ${camera.name}`}
-                  className="camera-stream"
-                  onError={() => {
-                    setActiveCameras(prev => ({
-                      ...prev,
-                      [cameraId]: { 
-                        ...prev[cameraId], 
-                        error: 'Không thể hiển thị hình ảnh'
-                      }
-                    }));
-                  }}
-                />
-              )}
-              {renderEmotionOverlay(cameraId)}
-            </div>
-          </Card.Body>
-
-          <Card.Footer className="camera-footer">
-            <div className="d-flex justify-content-between align-items-center">
-              <div className="d-flex gap-2">
-                <Button
-                  variant="outline-primary"
-                  size="sm"
-                  onClick={() => testCameraConnection(cameraId)}
-                >
-                  Kiểm tra kết nối
-                </Button>
-                <Button
-                  variant={isDetectingFaces ? "danger" : "success"}
-                  size="sm"
-                  onClick={() => handleFaceDetection(cameraId)}
-                  disabled={isDetecting[cameraId] || !isActive}
-                >
-                  {isDetecting[cameraId] ? (
-                    <Spinner animation="border" size="sm" />
-                  ) : isDetectingFaces ? (
-                    "Dừng nhận diện"
-                  ) : (
-                    "Nhận diện khuôn mặt"
-                  )}
-                </Button>
-              </div>
-              <Form.Check
-                type="switch"
-                id={`emotion-overlay-${cameraId}`}
-                label="Hiển thị cảm xúc"
-                checked={showEmotionOverlay}
-                onChange={() => setShowEmotionOverlay(!showEmotionOverlay)}
-              />
-            </div>
-          </Card.Footer>
-        </Card>
+        <CameraPlaceholder
+          camera={camera}
+          isActive={activeStates[cameraId]}
+          onStart={startProcessing}
+          onStop={stopProcessing}
+          loading={loadingStates[cameraId]}
+        />
       </Col>
     );
   };
